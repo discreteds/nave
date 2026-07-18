@@ -1350,6 +1350,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nave_materialize"
+version = "0.0.1"
+dependencies = [
+ "globset",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "nave_parse"
 version = "0.0.8"
 dependencies = [
