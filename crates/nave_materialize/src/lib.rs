@@ -20,7 +20,10 @@
 
 use std::collections::HashSet;
 
+use anyhow::Result;
+use base64::Engine;
 use globset::Glob;
+use nave_github::{BlobResponse, Repo, TreeResponse};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 
@@ -340,4 +343,328 @@ fn is_valid_repo_identity(repo: &str) -> bool {
         return false;
     };
     !owner.is_empty() && !name.is_empty()
+}
+
+/// Read-only access to the Git objects a [`materialize`] run needs.
+///
+/// Every method is a single `GET`; nothing here mutates repository state.
+/// Failures (missing repo, rate limiting, auth/visibility) surface as
+/// `anyhow::Error` and are turned into typed [`ArtifactState`]s by the
+/// materializer — never into a false [`ArtifactState::Absent`].
+#[allow(async_fn_in_trait)]
+pub trait MaterializeSource {
+    /// Resolve repository metadata (used for its `default_branch`).
+    async fn repository(&self, owner: &str, repo: &str) -> Result<Repo>;
+
+    /// Fetch the recursive tree for `ref_name`.
+    async fn tree(&self, owner: &str, repo: &str, ref_name: &str) -> Result<TreeResponse>;
+
+    /// Fetch a single blob by its object SHA.
+    async fn blob(&self, owner: &str, repo: &str, sha: &str) -> Result<BlobResponse>;
+}
+
+impl MaterializeSource for nave_github::GithubClient {
+    async fn repository(&self, owner: &str, repo: &str) -> Result<Repo> {
+        self.get_repo(owner, repo).await
+    }
+
+    async fn tree(&self, owner: &str, repo: &str, ref_name: &str) -> Result<TreeResponse> {
+        self.get_tree_recursive(owner, repo, ref_name).await
+    }
+
+    async fn blob(&self, owner: &str, repo: &str, sha: &str) -> Result<BlobResponse> {
+        self.get_blob(owner, repo, sha).await
+    }
+}
+
+/// Materialize a [`MaterializeRequest`] against a read-only [`MaterializeSource`].
+///
+/// For each requested repo this resolves the default branch, walks the
+/// recursive tree, matches each selector's glob against `blob` entries, and
+/// fetches + bounds the matching blobs. Every outcome is a typed
+/// [`ArtifactState`]; transport failures become [`ArtifactState::Error`], not
+/// false absence. The returned [`MaterializeResult`] is normalized into the
+/// contract's deterministic order (repos, then artifacts by path).
+///
+/// This function enforces only the per-repo/per-selector/per-file rules; it
+/// does not apply request-level aggregate caps (those live at the CLI layer).
+pub async fn materialize<S: MaterializeSource>(
+    source: &S,
+    request: MaterializeRequest,
+) -> MaterializeResult {
+    let mut repos = Vec::with_capacity(request.repos.len());
+    for repo_request in &request.repos {
+        repos.push(materialize_repo(source, repo_request).await);
+    }
+    MaterializeResult::new(request.contract_version, repos)
+}
+
+async fn materialize_repo<S: MaterializeSource>(
+    source: &S,
+    repo_request: &RepoRequest,
+) -> RepoResult {
+    let (owner, name) = match repo_request.repo.split_once('/') {
+        Some((owner, name)) if !owner.is_empty() && !name.is_empty() => (owner, name),
+        _ => return repo_error(repo_request, "", "", "invalid repo identity"),
+    };
+
+    // Resolve the default branch.
+    let repo = match source.repository(owner, name).await {
+        Ok(repo) => repo,
+        Err(err) => {
+            return repo_error(
+                repo_request,
+                "",
+                "",
+                &format!("failed to resolve repository: {err:#}"),
+            );
+        }
+    };
+    let ref_name = repo.default_branch.clone();
+
+    // Walk the recursive tree.
+    let tree = match source.tree(owner, name, &ref_name).await {
+        Ok(tree) => tree,
+        Err(err) => {
+            return repo_error(
+                repo_request,
+                &ref_name,
+                "",
+                &format!("failed to fetch tree: {err:#}"),
+            );
+        }
+    };
+    let tree_complete = !tree.truncated;
+
+    // Pre-collect the blob entries once so each selector reuses them.
+    let blob_entries: Vec<(&str, &str)> = tree
+        .tree
+        .iter()
+        .filter(|entry| entry.entry_type == "blob")
+        .map(|entry| (entry.path.as_str(), entry.sha.as_str()))
+        .collect();
+
+    let mut artifacts = Vec::new();
+    for selector in &repo_request.selectors {
+        materialize_selector(
+            source,
+            owner,
+            name,
+            selector,
+            &blob_entries,
+            tree_complete,
+            &mut artifacts,
+        )
+        .await;
+    }
+
+    RepoResult {
+        repo: repo_request.repo.clone(),
+        ref_name,
+        tree_sha: tree.sha,
+        tree_complete,
+        artifacts,
+    }
+}
+
+async fn materialize_selector<S: MaterializeSource>(
+    source: &S,
+    owner: &str,
+    name: &str,
+    selector: &Selector,
+    blob_entries: &[(&str, &str)],
+    tree_complete: bool,
+    out: &mut Vec<Artifact>,
+) {
+    let matcher = match Glob::new(&selector.pattern) {
+        Ok(glob) => glob.compile_matcher(),
+        Err(err) => {
+            out.push(nonmatch_artifact(
+                selector,
+                ArtifactState::Error,
+                Some(format!("invalid selector pattern: {err}")),
+            ));
+            return;
+        }
+    };
+
+    let mut hits: Vec<(&str, &str)> = blob_entries
+        .iter()
+        .copied()
+        .filter(|(path, _)| matcher.is_match(path))
+        .collect();
+    hits.sort_by(|a, b| a.0.cmp(b.0));
+
+    if hits.is_empty() {
+        // Absence is only authoritative when the tree is complete.
+        let state = if tree_complete {
+            ArtifactState::Absent
+        } else {
+            ArtifactState::Unresolved
+        };
+        out.push(nonmatch_artifact(selector, state, None));
+        return;
+    }
+
+    let limit = selector.max_bytes.unwrap_or(MAX_FILE_BYTES);
+    for (path, sha) in hits {
+        out.push(materialize_blob(source, owner, name, selector, path, sha, limit).await);
+    }
+}
+
+async fn materialize_blob<S: MaterializeSource>(
+    source: &S,
+    owner: &str,
+    name: &str,
+    selector: &Selector,
+    path: &str,
+    sha: &str,
+    limit: u64,
+) -> Artifact {
+    let blob = match source.blob(owner, name, sha).await {
+        Ok(blob) => blob,
+        Err(err) => {
+            return blob_artifact(
+                selector,
+                path,
+                sha,
+                None,
+                ArtifactState::Error,
+                None,
+                None,
+                Some(format!("failed to fetch blob: {err:#}")),
+            );
+        }
+    };
+
+    // Bound by the *declared* size before decoding anything.
+    if blob.size > limit {
+        return blob_artifact(
+            selector,
+            path,
+            sha,
+            Some(blob.size),
+            ArtifactState::TooLarge,
+            None,
+            None,
+            Some(format!("declared size {} exceeds limit {limit}", blob.size)),
+        );
+    }
+
+    // Strip embedded newlines GitHub inserts into Base64 payloads.
+    let cleaned: String = blob.content.split_whitespace().collect();
+    let bytes = match base64::engine::general_purpose::STANDARD.decode(cleaned.as_bytes()) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return blob_artifact(
+                selector,
+                path,
+                sha,
+                Some(blob.size),
+                ArtifactState::Error,
+                None,
+                None,
+                Some(format!("invalid base64 content: {err}")),
+            );
+        }
+    };
+
+    let decoded_len = bytes.len() as u64;
+
+    // Bound by the *decoded* size too — the API's declared size can lie.
+    if decoded_len > limit {
+        return blob_artifact(
+            selector,
+            path,
+            sha,
+            Some(decoded_len),
+            ArtifactState::TooLarge,
+            None,
+            None,
+            Some(format!("decoded size {decoded_len} exceeds limit {limit}")),
+        );
+    }
+
+    match String::from_utf8(bytes) {
+        Ok(text) => blob_artifact(
+            selector,
+            path,
+            sha,
+            Some(decoded_len),
+            ArtifactState::Found,
+            Some("utf-8".to_string()),
+            Some(text),
+            None,
+        ),
+        Err(_) => blob_artifact(
+            selector,
+            path,
+            sha,
+            Some(decoded_len),
+            ArtifactState::Binary,
+            None,
+            None,
+            Some("content is not valid utf-8".to_string()),
+        ),
+    }
+}
+
+fn repo_error(
+    repo_request: &RepoRequest,
+    ref_name: &str,
+    tree_sha: &str,
+    detail: &str,
+) -> RepoResult {
+    let artifacts = repo_request
+        .selectors
+        .iter()
+        .map(|selector| nonmatch_artifact(selector, ArtifactState::Error, Some(detail.to_string())))
+        .collect();
+    RepoResult {
+        repo: repo_request.repo.clone(),
+        ref_name: ref_name.to_string(),
+        tree_sha: tree_sha.to_string(),
+        tree_complete: false,
+        artifacts,
+    }
+}
+
+fn nonmatch_artifact(
+    selector: &Selector,
+    state: ArtifactState,
+    detail: Option<String>,
+) -> Artifact {
+    Artifact {
+        selector_id: selector.id.clone(),
+        path: None,
+        blob_sha: None,
+        size_bytes: None,
+        state,
+        encoding: None,
+        content: None,
+        detail,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn blob_artifact(
+    selector: &Selector,
+    path: &str,
+    sha: &str,
+    size_bytes: Option<u64>,
+    state: ArtifactState,
+    encoding: Option<String>,
+    content: Option<String>,
+    detail: Option<String>,
+) -> Artifact {
+    Artifact {
+        selector_id: selector.id.clone(),
+        path: Some(path.to_string()),
+        blob_sha: Some(sha.to_string()),
+        size_bytes,
+        state,
+        encoding,
+        content,
+        detail,
+    }
 }

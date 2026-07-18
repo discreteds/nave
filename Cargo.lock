@@ -1353,10 +1353,14 @@ dependencies = [
 name = "nave_materialize"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
+ "base64",
  "globset",
+ "nave_github",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]

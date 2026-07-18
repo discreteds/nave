@@ -26,6 +26,7 @@ indicatif = {version = "0.17"}
 figment2 = {version = "0.11", features = ["toml", "env"]}
 jsonschema = {version = "0.46", default-features = false, features = ["resolve-http", "tls-aws-lc-rs"]}
 globset = {version = "0.4"}
+base64 = {version = "0.22"}
 serde = {version = "1.0", features = ["derive"]}
 toml = {version = "0.8"}
 # Use rustls to avoid OpenSSL headaches on CI/various OSes

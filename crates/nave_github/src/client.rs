@@ -4,7 +4,7 @@ use reqwest::{Client, StatusCode};
 use tracing::{debug, warn};
 
 use crate::auth::AuthMode;
-use crate::models::{Repo, SearchResponse, TreeResponse};
+use crate::models::{BlobResponse, Repo, SearchResponse, TreeResponse};
 
 pub struct GithubClient {
     http: Client,
@@ -121,6 +121,23 @@ impl GithubClient {
             warn!(%owner, %repo, "tree response was truncated; some paths may be missed");
         }
         Ok(tree)
+    }
+
+    /// `GET /repos/{owner}/{repo}`
+    pub async fn get_repo(&self, owner: &str, repo: &str) -> Result<Repo> {
+        let url = format!("{}/repos/{}/{}", self.api_base, owner, repo);
+        let resp = self.http.get(&url).send().await?;
+        parse_body(resp).await
+    }
+
+    /// `GET /repos/{owner}/{repo}/git/blobs/{sha}`
+    pub async fn get_blob(&self, owner: &str, repo: &str, sha: &str) -> Result<BlobResponse> {
+        let url = format!(
+            "{}/repos/{}/{}/git/blobs/{}",
+            self.api_base, owner, repo, sha,
+        );
+        let resp = self.http.get(&url).send().await?;
+        parse_body(resp).await
     }
 }
 
