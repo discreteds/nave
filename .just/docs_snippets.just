@@ -27,7 +27,7 @@ snippets:
 
 # Check every snippet has matching markdown doc
 check-docs-snippets:
-    #!/usr/bin/env -S echo-comment --shell-flags="-e" --color bright-green
+    #!/usr/bin/env -S echo-comment --shell-flags=-e --color bright-green
     echo "Checking snippets → docs..."
 
     missing=0
