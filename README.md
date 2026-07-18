@@ -183,6 +183,33 @@ Options:
   -h, --help  Print help
 ```
 
+### Materialize: bounded file evidence
+
+`nave materialize` fetches specific files out of one or more repositories and
+returns a typed evidence report. It reads a JSON request describing the repos
+and per-repo selectors (exact paths or globs), resolves each repo's default
+branch, walks its tree, and inlines the matching blobs — each outcome is a
+typed state (`found`, `absent`, `unresolved`, `too_large`, `binary`,
+`unsupported`, `error`).
+
+```bash
+nave materialize --request request.json --json
+```
+
+The request is only ever read from the `--request` file (never from a
+command-line argument), with a size-bounded read. Requests are capped at 500
+repositories, 256 selectors per repository, and a 1 MiB request file; the
+report is clamped to 20,000 `found` artifacts and 256 MiB of total content
+(over-cap artifacts are converted to a typed state with content dropped, never
+emitted as unmarked partial success).
+
+`--json` prints the deterministic `MaterializeResult` to stdout — this is the
+**only** machine contract. Without `--json`, a human summary of counts and
+per-state tallies is printed and file **content is never shown**. The command
+exits `0` whenever a valid report is produced (including reports containing
+typed per-file failures like `error` or `absent`) and non-zero only when the
+request cannot be parsed, validated, or capped, or the client cannot be built.
+
 ## Setup commands
 
 Three plumbing commands you'll run in order on first use:

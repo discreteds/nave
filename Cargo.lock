@@ -1276,6 +1276,7 @@ dependencies = [
  "nave_check",
  "nave_config",
  "nave_github",
+ "nave_materialize",
  "nave_parse",
  "nave_pen",
  "nave_pull",
