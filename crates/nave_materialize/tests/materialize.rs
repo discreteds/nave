@@ -12,7 +12,8 @@ use anyhow::{Result, anyhow};
 use base64::Engine;
 use nave_github::{BlobResponse, Repo, RepoOwner, TreeEntry, TreeResponse};
 use nave_materialize::{
-    ArtifactState, MaterializeRequest, MaterializeSource, RepoRequest, Selector, materialize,
+    ArtifactState, MAX_FILE_BYTES, MaterializeRequest, MaterializeSource, RepoRequest, Selector,
+    materialize,
 };
 
 // --- fake source ------------------------------------------------------------
@@ -514,4 +515,37 @@ async fn output_is_lexically_stable_across_repos_and_paths() {
         .map(|a| a.path.as_deref().unwrap())
         .collect();
     assert_eq!(alpha_paths, vec!["x.txt", "y.txt"]);
+}
+
+#[tokio::test]
+async fn materialize_clamps_selector_max_bytes_to_hard_ceiling() {
+    // materialize() is a public entrypoint that callers can invoke without
+    // going through validate_request() first. A selector that claims a
+    // max_bytes above MAX_FILE_BYTES must still be clamped to the hard
+    // ceiling, not honored as a raised limit.
+    let src = FakeSource::default()
+        .with_repo("acme", "widget", "main")
+        .with_tree(
+            "acme",
+            "widget",
+            tree("t1", false, vec![blob_entry("big.txt", "b1")]),
+        )
+        .with_blob(bytes_blob(
+            "b1",
+            b"irrelevant, declared size drives the check",
+            MAX_FILE_BYTES + 1,
+        ));
+
+    let result = materialize(
+        &src,
+        request(
+            "acme/widget",
+            vec![selector("big", "big.txt", Some(MAX_FILE_BYTES + 1))],
+        ),
+    )
+    .await;
+
+    let art = &result.repos[0].artifacts[0];
+    assert_eq!(art.state, ArtifactState::TooLarge);
+    assert_eq!(art.content, None);
 }

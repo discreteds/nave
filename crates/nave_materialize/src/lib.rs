@@ -506,7 +506,13 @@ async fn materialize_selector<S: MaterializeSource>(
         return;
     }
 
-    let limit = selector.max_bytes.unwrap_or(MAX_FILE_BYTES);
+    // Defense-in-depth hard ceiling: validate_request() rejects selectors that
+    // raise the limit above MAX_FILE_BYTES, but materialize() is a public
+    // entrypoint that must not trust callers to have validated first.
+    let limit = selector
+        .max_bytes
+        .unwrap_or(MAX_FILE_BYTES)
+        .min(MAX_FILE_BYTES);
     for (path, sha) in hits {
         out.push(materialize_blob(source, owner, name, selector, path, sha, limit).await);
     }
