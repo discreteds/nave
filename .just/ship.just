@@ -1,6 +1,6 @@
 # Release a new version, pass --help for options to `uv version --bump`
 release bump_level="patch":
-    #!/usr/bin/env -S echo-comment --shell-flags="-e" --color bright-green
+    #!/usr/bin/env -S echo-comment --shell-flags=-e --color bright-green
 
     ## Exit early if help was requested
     if [[ "{{ bump_level }}" == "--help" ]]; then

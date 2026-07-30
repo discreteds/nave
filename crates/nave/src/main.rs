@@ -35,12 +35,20 @@ enum Command {
     Search(commands::search::SearchArgs),
     /// Operations on pens (named subsets of the fleet).
     Pen(commands::pen::PenArgs),
+    /// Materialize specific files from repos into a typed evidence report.
+    Materialize(commands::materialize::MaterializeArgs),
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let filter = EnvFilter::try_from_env("NAVE_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
-    fmt().with_env_filter(filter).with_target(false).init();
+    // Logs go to stderr so stdout stays a clean machine contract (e.g. the
+    // JSON emitted by `nave materialize --json`).
+    fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .init();
 
     let cli = Cli::parse();
     match cli.command {
@@ -52,5 +60,6 @@ async fn main() -> Result<()> {
         Command::Schemas(args) => commands::schemas::run(args).await,
         Command::Search(args) => commands::search::run(args).await,
         Command::Pen(args) => commands::pen::run(args).await,
+        Command::Materialize(args) => commands::materialize::run(args).await,
     }
 }

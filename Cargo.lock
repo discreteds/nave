@@ -1276,6 +1276,7 @@ dependencies = [
  "nave_check",
  "nave_config",
  "nave_github",
+ "nave_materialize",
  "nave_parse",
  "nave_pen",
  "nave_pull",
@@ -1347,6 +1348,20 @@ dependencies = [
  "time",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "nave_materialize"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "base64",
+ "globset",
+ "nave_github",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]

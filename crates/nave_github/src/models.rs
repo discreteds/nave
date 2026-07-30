@@ -41,3 +41,16 @@ pub struct SearchResponse {
     pub total_count: u64,
     pub items: Vec<Repo>,
 }
+
+/// Response shape for `GET /repos/{owner}/{repo}/git/blobs/{sha}`.
+///
+/// `size` is the blob's declared byte length (before Base64 decoding) and
+/// `content` is Base64-encoded text (with `encoding == "base64"`) that may
+/// contain embedded newlines per GitHub's Git Blob API.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BlobResponse {
+    pub sha: String,
+    pub size: u64,
+    pub encoding: String,
+    pub content: String,
+}

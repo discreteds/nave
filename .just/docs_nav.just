@@ -1,5 +1,5 @@
 check-docs-nav:
-    #!/usr/bin/env -S echo-comment --shell-flags="-e" --color bright-green
+    #!/usr/bin/env -S echo-comment --shell-flags=-e --color bright-green
     echo "Checking zensical nav vs docs/..."
 
     nav_files=$(tq -f zensical.toml 'project.nav' -o json | jq -r '.. | strings' | sort -u)

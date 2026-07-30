@@ -1,0 +1,25 @@
+[dependencies]
+serde = {workspace = true}
+serde_json = {workspace = true}
+thiserror = {workspace = true}
+globset = {workspace = true}
+nave_github = {workspace = true}
+anyhow = {workspace = true}
+base64 = {workspace = true}
+
+[dev-dependencies]
+tokio = {workspace = true}
+
+[lints]
+workspace = true
+
+[package]
+name = "nave_materialize"
+version = "0.0.1"
+description = "Materialization request/result contract for nave dependency evidence"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
