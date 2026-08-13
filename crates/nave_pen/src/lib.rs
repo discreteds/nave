@@ -8,6 +8,8 @@ pub mod rewrite_state;
 pub mod state;
 pub mod storage;
 pub mod walk;
+mod apply_state;
+mod git_util;
 
 pub use create::{CreateOptions, create_pen};
 pub use ops::{SyncReport, clean_pen, exec_pen, reinit_pen, remove_pen_safe, revert_pen, sync_pen};
