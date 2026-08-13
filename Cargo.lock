@@ -1272,6 +1272,7 @@ dependencies = [
  "clap",
  "dialoguer",
  "indicatif",
+ "nave_apply",
  "nave_build",
  "nave_check",
  "nave_config",
@@ -1284,14 +1285,25 @@ dependencies = [
  "nave_scan",
  "nave_schemas",
  "nave_search",
+ "nave_test_support",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "nave_apply"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -1383,6 +1395,7 @@ dependencies = [
  "anyhow",
  "dirs",
  "futures",
+ "nave_apply",
  "nave_config",
  "nave_github",
  "nave_parse",
@@ -1390,9 +1403,11 @@ dependencies = [
  "nave_scan",
  "nave_schemas",
  "nave_search",
+ "nave_test_support",
  "serde",
  "serde_json",
  "similar",
+ "tempfile",
  "time",
  "tokio",
  "toml",
@@ -1468,6 +1483,17 @@ dependencies = [
  "serde_json",
  "time",
  "tracing",
+]
+
+[[package]]
+name = "nave_test_support"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "nave_pen",
+ "tempfile",
+ "time",
+ "tokio",
 ]
 
 [[package]]

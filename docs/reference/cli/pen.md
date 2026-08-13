@@ -41,3 +41,17 @@ for arbitrary per-repo commands, and drive PRs manually with `gh`.
 - [`exec`](pen/exec.md)
 - [`rm`](pen/rm.md)
 - [`rewrite`](pen/rewrite.md)
+
+### Apply-mode verbs
+
+Land a re-derived, authorized proposal onto a real repo via a branch + PR — see the
+[Pens](../../concepts/pens.md) concept page. Nave is the sole clone mutator for apply-mode
+landings; orchestration and policy live in the caller (e.g. `hiivmind-pulse-gh`'s apply
+driver). Sequence: `capabilities` (handshake) → `branch` → `commit` → `push` → `reset`
+(cleanup, terminal or on failure).
+
+- [`capabilities`](pen/capabilities.md)
+- [`branch`](pen/branch.md)
+- [`commit`](pen/commit.md)
+- [`push`](pen/push.md)
+- [`reset`](pen/reset.md)

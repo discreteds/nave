@@ -27,6 +27,11 @@ Four state axes per repo:
 | `run`      | `not-run`, `run-local`, `run-pushed`                  |
 | Divergence | `up-to-date`, `ahead N`, `behind N`, `diverged N/M`   |
 
+`--json` output additionally carries `clone_path` per repo: the absolute path of that repo's
+clone under the pen's workspace, or `null` if the repo has never been cloned. Consumed by
+external orchestrators (e.g. the `hiivmind-pulse-gh` apply driver) that need to locate a
+repo's on-disk clone without re-deriving the path themselves.
+
 ## Use cases
 
 - **Before `pen exec`** — check nothing's dirty; you'll lose uncommitted work otherwise.

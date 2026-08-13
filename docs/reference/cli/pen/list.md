@@ -39,7 +39,8 @@ Valid values:
 
 ## JSON
 
-`--json` emits the full per-repo state array, one entry per repo per pen. Useful
+`--json` emits the full per-repo state array, one entry per repo per pen — the same
+per-repo shape [`pen status`](status.md) emits, including `clone_path` (see that page). Useful
 for piping into `jq`:
 
 ```bash

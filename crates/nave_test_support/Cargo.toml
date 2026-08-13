@@ -1,0 +1,20 @@
+[dependencies]
+nave_pen = {workspace = true}
+tokio = {workspace = true}
+time = {workspace = true}
+tempfile = {workspace = true}
+anyhow = {workspace = true}
+
+[lints]
+workspace = true
+
+[package]
+name = "nave_test_support"
+version = "0.0.1"
+description = "Real-git fixtures for pen apply-verb tests"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true

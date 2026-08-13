@@ -16,6 +16,11 @@ time = {workspace = true}
 dirs = {workspace = true}
 serde_json = {workspace = true}
 similar = {workspace = true}
+nave_apply = {workspace = true}
+
+[dev-dependencies]
+tempfile = {workspace = true}
+nave_test_support = {workspace = true}
 
 [lints]
 workspace = true
