@@ -1471,6 +1471,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nave_test_support"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "nave_pen",
+ "tempfile",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
