@@ -54,6 +54,7 @@ pub struct RepoState {
     pub divergence: Divergence,
     pub ahead: u32,
     pub behind: u32,
+    pub clone_path: Option<String>,
 }
 
 pub async fn compute_repo_state(
@@ -73,6 +74,7 @@ pub async fn compute_repo_state(
             divergence: Divergence::Unknown,
             ahead: 0,
             behind: 0,
+            clone_path: None,
         });
     }
 
@@ -80,6 +82,7 @@ pub async fn compute_repo_state(
     let freshness = compute_freshness(cache_root, r).unwrap_or(Freshness::Unknown);
     let run_state = compute_run_state(&dir, &pen.branch, &r.default_branch).await?;
     let (divergence, ahead, behind) = compute_divergence(&dir, &pen.branch).await?;
+    let clone_path = Some(dir.to_string_lossy().into_owned());
 
     Ok(RepoState {
         owner: r.owner.clone(),
@@ -90,6 +93,7 @@ pub async fn compute_repo_state(
         divergence,
         ahead,
         behind,
+        clone_path,
     })
 }
 

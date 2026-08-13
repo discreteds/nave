@@ -17,6 +17,10 @@ dirs = {workspace = true}
 serde_json = {workspace = true}
 similar = {workspace = true}
 
+[dev-dependencies]
+tempfile = {workspace = true}
+nave_test_support = {workspace = true}
+
 [lints]
 workspace = true
 
