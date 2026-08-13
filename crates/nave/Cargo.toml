@@ -15,6 +15,7 @@ nave_search = {workspace = true}
 nave_pen = {workspace = true}
 nave_rewrite = {workspace = true}
 nave_materialize = {workspace = true}
+nave_apply = {workspace = true}
 anyhow = {workspace = true}
 clap = {workspace = true}
 tokio = {workspace = true}
@@ -30,6 +31,7 @@ indicatif = {workspace = true}
 
 [dev-dependencies]
 cargo-husky = {version = "1.5.0", default-features = false, features = ["user-hooks"]}
+nave_test_support = {workspace = true}
 
 [lints]
 workspace = true

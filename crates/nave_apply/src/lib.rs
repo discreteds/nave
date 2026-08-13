@@ -32,7 +32,10 @@ pub enum ValidationError {
     InvalidPath(String),
 }
 
-pub fn validate_envelope_repos(protocol_version: u32, repos: &[String]) -> Result<(), ValidationError> {
+pub fn validate_envelope_repos(
+    protocol_version: u32,
+    repos: &[String],
+) -> Result<(), ValidationError> {
     if protocol_version != PROTOCOL_VERSION {
         return Err(ValidationError::ProtocolVersionMismatch(protocol_version));
     }
@@ -59,9 +62,16 @@ pub fn validate_ref_name(name: &str) -> Result<(), ValidationError> {
         || name.contains("//")
         || name.contains("..")
         || name.starts_with('-')
-        || name
-            .chars()
-            .any(|c| c.is_control() || c == ' ' || c == '~' || c == '^' || c == ':' || c == '?' || c == '*' || c == '[');
+        || name.chars().any(|c| {
+            c.is_control()
+                || c == ' '
+                || c == '~'
+                || c == '^'
+                || c == ':'
+                || c == '?'
+                || c == '*'
+                || c == '['
+        });
     if bad {
         return Err(ValidationError::InvalidRefName(name.to_string()));
     }

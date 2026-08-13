@@ -15,11 +15,19 @@ use tokio::process::Command;
 
 pub(crate) async fn git_output(dir: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new("git")
-        .arg("-C").arg(dir).args(args)
-        .output().await
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .await
         .with_context(|| format!("spawning git {args:?} in {}", dir.display()))?;
     if !out.status.success() {
-        bail!("git {:?} in {} failed: {}", args, dir.display(), String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "git {:?} in {} failed: {}",
+            args,
+            dir.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
@@ -30,10 +38,13 @@ pub(crate) async fn git_status(dir: &Path, args: &[&str]) -> Result<()> {
 
 pub(crate) async fn git_ok(dir: &Path, args: &[&str]) -> Result<bool> {
     let status = Command::new("git")
-        .arg("-C").arg(dir).args(args)
+        .arg("-C")
+        .arg(dir)
+        .args(args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status().await
+        .status()
+        .await
         .with_context(|| format!("spawning git {args:?} in {}", dir.display()))?;
     Ok(status.success())
 }
@@ -54,14 +65,23 @@ mod tests {
     async fn git_output_bails_on_nonzero_exit() {
         let fx = nave_test_support::init_pen_fixture("git-util-fx2", "acme", "docs", "main").await;
         let dir = crate::pen_repo_clone_dir(fx.pen_root.path(), "git-util-fx2", "acme", "docs");
-        assert!(git_output(&dir, &["rev-parse", "refs/heads/does-not-exist"]).await.is_err());
+        assert!(
+            git_output(&dir, &["rev-parse", "refs/heads/does-not-exist"])
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn git_ok_is_false_not_error_on_missing_ref() {
         let fx = nave_test_support::init_pen_fixture("git-util-fx3", "acme", "docs", "main").await;
         let dir = crate::pen_repo_clone_dir(fx.pen_root.path(), "git-util-fx3", "acme", "docs");
-        let ok = git_ok(&dir, &["rev-parse", "--verify", "--quiet", "refs/heads/nope"]).await.unwrap();
+        let ok = git_ok(
+            &dir,
+            &["rev-parse", "--verify", "--quiet", "refs/heads/nope"],
+        )
+        .await
+        .unwrap();
         assert!(!ok);
     }
 }

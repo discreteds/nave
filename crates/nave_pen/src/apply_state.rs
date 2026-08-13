@@ -33,24 +33,38 @@ pub(crate) struct ApplyRepoState {
 }
 
 fn apply_state_path(pen_root: &Path, pen_name: &str, apply_ref: &str) -> PathBuf {
-    pen_dir(pen_root, pen_name).join("apply").join(apply_ref).join("state.toml")
+    pen_dir(pen_root, pen_name)
+        .join("apply")
+        .join(apply_ref)
+        .join("state.toml")
 }
 
-pub(crate) fn read_apply_state(pen_root: &Path, pen_name: &str, apply_ref: &str) -> Result<ApplyState> {
+pub(crate) fn read_apply_state(
+    pen_root: &Path,
+    pen_name: &str,
+    apply_ref: &str,
+) -> Result<ApplyState> {
     let path = apply_state_path(pen_root, pen_name, apply_ref);
     if !path.exists() {
         return Ok(ApplyState::default());
     }
-    let raw = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
 }
 
-pub(crate) fn write_apply_state(pen_root: &Path, pen_name: &str, apply_ref: &str, state: &ApplyState) -> Result<()> {
+pub(crate) fn write_apply_state(
+    pen_root: &Path,
+    pen_name: &str,
+    apply_ref: &str,
+    state: &ApplyState,
+) -> Result<()> {
     let path = apply_state_path(pen_root, pen_name, apply_ref);
     let parent = path.parent().expect("apply state path always has a parent");
     std::fs::create_dir_all(parent)?;
     let tmp = parent.join(format!(".state.toml.tmp.{}", std::process::id()));
-    std::fs::write(&tmp, toml::to_string_pretty(state)?).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::write(&tmp, toml::to_string_pretty(state)?)
+        .with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))
 }
 
@@ -67,7 +81,12 @@ mod tests {
     use super::*;
 
     fn sample() -> ApplyRepoState {
-        ApplyRepoState { base_ref: "develop".into(), expected_base_sha: "a".repeat(40), expected_origin_url: "file:///origin".into(), local_commit_sha: None }
+        ApplyRepoState {
+            base_ref: "develop".into(),
+            expected_base_sha: "a".repeat(40),
+            expected_origin_url: "file:///origin".into(),
+            local_commit_sha: None,
+        }
     }
 
     #[test]
@@ -90,9 +109,20 @@ mod tests {
     #[test]
     fn clear_removes_the_file() {
         let root = tempfile::TempDir::new().unwrap();
-        write_apply_state(root.path(), "pen1", "pulse/apply/p1", &ApplyState::default()).unwrap();
+        write_apply_state(
+            root.path(),
+            "pen1",
+            "pulse/apply/p1",
+            &ApplyState::default(),
+        )
+        .unwrap();
         clear_apply_state(root.path(), "pen1", "pulse/apply/p1").unwrap();
-        assert!(read_apply_state(root.path(), "pen1", "pulse/apply/p1").unwrap().repos.is_empty());
+        assert!(
+            read_apply_state(root.path(), "pen1", "pulse/apply/p1")
+                .unwrap()
+                .repos
+                .is_empty()
+        );
     }
 
     #[test]
@@ -104,9 +134,31 @@ mod tests {
         let mut b = ApplyState::default();
         b.repos.insert("p/q".into(), sample());
         write_apply_state(root.path(), "pen1", "pulse/a/b__c", &b).unwrap();
-        assert_eq!(read_apply_state(root.path(), "pen1", "pulse/a__b/c").unwrap().repos.len(), 1);
-        assert_eq!(read_apply_state(root.path(), "pen1", "pulse/a/b__c").unwrap().repos.len(), 1);
-        assert!(read_apply_state(root.path(), "pen1", "pulse/a__b/c").unwrap().repos.contains_key("x/y"));
-        assert!(read_apply_state(root.path(), "pen1", "pulse/a/b__c").unwrap().repos.contains_key("p/q"));
+        assert_eq!(
+            read_apply_state(root.path(), "pen1", "pulse/a__b/c")
+                .unwrap()
+                .repos
+                .len(),
+            1
+        );
+        assert_eq!(
+            read_apply_state(root.path(), "pen1", "pulse/a/b__c")
+                .unwrap()
+                .repos
+                .len(),
+            1
+        );
+        assert!(
+            read_apply_state(root.path(), "pen1", "pulse/a__b/c")
+                .unwrap()
+                .repos
+                .contains_key("x/y")
+        );
+        assert!(
+            read_apply_state(root.path(), "pen1", "pulse/a/b__c")
+                .unwrap()
+                .repos
+                .contains_key("p/q")
+        );
     }
 }

@@ -8,7 +8,10 @@ async fn clone_path_present_when_repo_cloned() {
         .await
         .unwrap();
     let expected = nave_pen::pen_repo_clone_dir(fx.pen_root.path(), &fx.pen.name, "acme", "docs");
-    assert_eq!(state.clone_path.as_deref(), Some(expected.to_str().unwrap()));
+    assert_eq!(
+        state.clone_path.as_deref(),
+        Some(expected.to_str().unwrap())
+    );
 }
 
 #[tokio::test]

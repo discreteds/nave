@@ -1,15 +1,16 @@
 //! Pen model: named subsets of the fleet, materialised as clones
 //! with a shared branch, for running codemods across.
 
+pub mod apply_ops;
+mod apply_state;
 pub mod create;
+mod git_util;
 pub mod ops;
 pub mod rewrite;
 pub mod rewrite_state;
 pub mod state;
 pub mod storage;
 pub mod walk;
-mod apply_state;
-mod git_util;
 
 pub use create::{CreateOptions, create_pen};
 pub use ops::{SyncReport, clean_pen, exec_pen, reinit_pen, remove_pen_safe, revert_pen, sync_pen};

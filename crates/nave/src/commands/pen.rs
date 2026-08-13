@@ -41,6 +41,8 @@ pub(crate) enum PenAction {
     Rm(PenRmArgs),
     /// Apply declarative rewrites defined in the pen's `pen.toml`.
     Rewrite(PenRewriteArgs),
+    /// Report the apply-verb protocol version and supported verbs.
+    Capabilities(PenCapabilitiesArgs),
 }
 
 #[derive(Debug, Args)]
@@ -188,6 +190,13 @@ pub(crate) struct PenRewriteArgs {
     pub json: bool,
 }
 
+#[derive(Debug, Args, Default)]
+pub(crate) struct PenCapabilitiesArgs {
+    /// Emit JSON instead of a human summary.
+    #[arg(long)]
+    pub json: bool,
+}
+
 pub(crate) async fn run(args: PenArgs) -> Result<()> {
     match args.action {
         PenAction::Create(a) => run_create(a).await,
@@ -201,6 +210,7 @@ pub(crate) async fn run(args: PenArgs) -> Result<()> {
         PenAction::Exec(a) => run_exec(a).await,
         PenAction::Rm(a) => run_rm(a).await,
         PenAction::Rewrite(a) => run_rewrite(a).await,
+        PenAction::Capabilities(a) => run_capabilities(&a),
     }
 }
 
@@ -454,6 +464,20 @@ async fn run_rewrite(args: PenRewriteArgs) -> Result<()> {
     let any_failed = report.repos.iter().any(|r| r.rollback_trigger.is_some());
     if any_failed {
         std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn run_capabilities(args: &PenCapabilitiesArgs) -> Result<()> {
+    let caps = nave_pen::apply_ops::capabilities();
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&caps)?);
+    } else {
+        println!(
+            "protocol_version={} verbs={}",
+            caps.protocol_version,
+            caps.verbs.join(",")
+        );
     }
     Ok(())
 }

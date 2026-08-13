@@ -26,17 +26,34 @@ async fn git(dir: &std::path::Path, args: &[&str]) {
     assert!(status.success(), "git {args:?} failed in {}", dir.display());
 }
 
-pub async fn init_pen_fixture(pen_name: &str, owner: &str, repo: &str, default_branch: &str) -> PenFixture {
+pub async fn init_pen_fixture(
+    pen_name: &str,
+    owner: &str,
+    repo: &str,
+    default_branch: &str,
+) -> PenFixture {
     let origin = TempDir::new().unwrap();
     git(origin.path(), &["init", "--bare", "-b", default_branch]).await;
 
     let seed = TempDir::new().unwrap();
-    git(seed.path(), &["clone", origin.path().to_str().unwrap(), "."]).await;
+    git(
+        seed.path(),
+        &["clone", origin.path().to_str().unwrap(), "."],
+    )
+    .await;
     std::fs::write(seed.path().join("README.md"), "seed\n").unwrap();
     git(seed.path(), &["add", "README.md"]).await;
     git(
         seed.path(),
-        &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "seed"],
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-m",
+            "seed",
+        ],
     )
     .await;
     git(seed.path(), &["push", "origin", default_branch]).await;
@@ -53,7 +70,11 @@ pub async fn init_pen_fixture(pen_name: &str, owner: &str, repo: &str, default_b
     let clone_dir: PathBuf = nave_pen::pen_repo_clone_dir(pen_root.path(), pen_name, owner, repo);
     git(
         pen_root.path(),
-        &["clone", origin.path().to_str().unwrap(), clone_dir.to_str().unwrap()],
+        &[
+            "clone",
+            origin.path().to_str().unwrap(),
+            clone_dir.to_str().unwrap(),
+        ],
     )
     .await;
     let pen_branch = format!("nave/{pen_name}");
@@ -88,7 +109,12 @@ pub async fn init_pen_fixture(pen_name: &str, owner: &str, repo: &str, default_b
     };
     nave_pen::storage::write_pen(pen_root.path(), &pen).unwrap();
 
-    PenFixture { origin, pen_root, pen, base_sha }
+    PenFixture {
+        origin,
+        pen_root,
+        pen,
+        base_sha,
+    }
 }
 
 #[tokio::test]
