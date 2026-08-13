@@ -1,0 +1,7 @@
+Report the apply-verb protocol version and supported verbs
+
+Usage: nave pen capabilities [OPTIONS]
+
+Options:
+      --json  Emit JSON instead of a human summary
+  -h, --help  Print help

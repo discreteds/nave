@@ -1,0 +1,13 @@
+Bounded-stage and commit dirty apply-branch paths, with post-exec invariant checks
+
+Usage: nave pen commit [OPTIONS] --request <REQUEST> --message <MESSAGE> <NAME> <BRANCH>
+
+Arguments:
+  <NAME>    Pen name
+  <BRANCH>  Apply branch name (as provisioned by `pen branch`)
+
+Options:
+      --request <REQUEST>  Path to a JSON request file (`protocol_version`, per-repo `repo`/`paths`)
+  -m, --message <MESSAGE>  Commit message
+      --json               Emit JSON instead of nothing
+  -h, --help               Print help

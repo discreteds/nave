@@ -207,41 +207,57 @@ pub(crate) struct PenCapabilitiesArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct PenBranchArgs {
+    /// Pen name.
     pub name: String,
+    /// Path to a JSON request file (`protocol_version`, `apply_ref`, per-repo `base_ref`/`expected_base_sha`).
     #[arg(long)]
     pub request: std::path::PathBuf,
+    /// Emit JSON instead of nothing (this verb has no useful human summary).
     #[arg(long)]
     pub json: bool,
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct PenCommitArgs {
+    /// Pen name.
     pub name: String,
+    /// Apply branch name (as provisioned by `pen branch`).
     pub branch: String,
+    /// Path to a JSON request file (`protocol_version`, per-repo `repo`/`paths`).
     #[arg(long)]
     pub request: std::path::PathBuf,
+    /// Commit message.
     #[arg(short = 'm', long)]
     pub message: String,
+    /// Emit JSON instead of nothing.
     #[arg(long)]
     pub json: bool,
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct PenPushArgs {
+    /// Pen name.
     pub name: String,
+    /// Apply branch name (as provisioned by `pen branch`).
     pub branch: String,
+    /// Path to a JSON request file (`protocol_version`, per-repo `repo`).
     #[arg(long)]
     pub request: std::path::PathBuf,
+    /// Emit JSON instead of nothing.
     #[arg(long)]
     pub json: bool,
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct PenResetArgs {
+    /// Pen name.
     pub name: String,
+    /// Apply branch name (as provisioned by `pen branch`).
     pub branch: String,
+    /// Path to a JSON request file (`protocol_version`, per-repo `repo`/`expected_pushed_sha`).
     #[arg(long)]
     pub request: std::path::PathBuf,
+    /// Emit JSON instead of nothing.
     #[arg(long)]
     pub json: bool,
 }

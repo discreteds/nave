@@ -1,0 +1,11 @@
+Provision the apply branch across a request's repos off a verified remote base
+
+Usage: nave pen branch [OPTIONS] --request <REQUEST> <NAME>
+
+Arguments:
+  <NAME>  Pen name
+
+Options:
+      --request <REQUEST>  Path to a JSON request file (`protocol_version`, `apply_ref`, per-repo `base_ref`/`expected_base_sha`)
+      --json               Emit JSON instead of nothing (this verb has no useful human summary)
+  -h, --help               Print help
