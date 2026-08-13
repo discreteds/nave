@@ -3,10 +3,6 @@
 //! stdout, because the apply verbs report exact SHAs/refs back to the
 //! caller as structured JSON — git's own text output is the only place
 //! that data exists.
-//!
-//! `#[allow(dead_code)]`: no non-test consumer exists until Task 6's
-//! `provision_branch` (`apply_ops.rs`) is implemented — removed there.
-#![allow(dead_code)]
 
 use std::path::Path;
 

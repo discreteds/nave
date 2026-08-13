@@ -4,10 +4,6 @@
 //! (pre-validated by `nave_apply::validate_ref_name` at every call site —
 //! no `..`, no leading/trailing/doubled `/`), never collapsed into one
 //! filename, so distinct refs sharing a `/`-boundary can never collide.
-//!
-//! `#[allow(dead_code)]`: no non-test consumer exists until Task 6's
-//! `provision_branch` (`apply_ops.rs`) is implemented — removed there.
-#![allow(dead_code)]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -68,6 +64,8 @@ pub(crate) fn write_apply_state(
     std::fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))
 }
 
+// No non-test consumer until Task 9's `reset_branch`.
+#[allow(dead_code)]
 pub(crate) fn clear_apply_state(pen_root: &Path, pen_name: &str, apply_ref: &str) -> Result<()> {
     let path = apply_state_path(pen_root, pen_name, apply_ref);
     if path.exists() {

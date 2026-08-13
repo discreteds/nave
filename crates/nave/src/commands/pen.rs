@@ -43,6 +43,8 @@ pub(crate) enum PenAction {
     Rewrite(PenRewriteArgs),
     /// Report the apply-verb protocol version and supported verbs.
     Capabilities(PenCapabilitiesArgs),
+    /// Provision the apply branch across a request's repos off a verified remote base.
+    Branch(PenBranchArgs),
 }
 
 #[derive(Debug, Args)]
@@ -197,6 +199,15 @@ pub(crate) struct PenCapabilitiesArgs {
     pub json: bool,
 }
 
+#[derive(Debug, Args)]
+pub(crate) struct PenBranchArgs {
+    pub name: String,
+    #[arg(long)]
+    pub request: std::path::PathBuf,
+    #[arg(long)]
+    pub json: bool,
+}
+
 pub(crate) async fn run(args: PenArgs) -> Result<()> {
     match args.action {
         PenAction::Create(a) => run_create(a).await,
@@ -211,6 +222,7 @@ pub(crate) async fn run(args: PenArgs) -> Result<()> {
         PenAction::Rm(a) => run_rm(a).await,
         PenAction::Rewrite(a) => run_rewrite(a).await,
         PenAction::Capabilities(a) => run_capabilities(&a),
+        PenAction::Branch(a) => run_branch(a).await,
     }
 }
 
@@ -478,6 +490,36 @@ fn run_capabilities(args: &PenCapabilitiesArgs) -> Result<()> {
             caps.protocol_version,
             caps.verbs.join(",")
         );
+    }
+    Ok(())
+}
+
+async fn run_branch(args: PenBranchArgs) -> Result<()> {
+    let cfg = load_default()?;
+    let root = resolve_pen_root(&cfg.pen)?;
+    let pen = load_pen(&root, &args.name)?;
+    let raw = std::fs::read_to_string(&args.request).context("reading request file")?;
+    let request: nave_apply::BranchEnvelope = match serde_json::from_str(&raw) {
+        Ok(r) => r,
+        Err(e) => {
+            let result = nave_apply::BranchResult {
+                protocol_version: nave_apply::PROTOCOL_VERSION,
+                adapter_state: nave_apply::AdapterState::Error,
+                reason: Some(format!("invalid request: {e}")),
+                repos: vec![],
+            };
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
+            std::process::exit(1);
+        }
+    };
+    let result = nave_pen::apply_ops::provision_branch(&root, &pen, &request).await?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    }
+    if matches!(result.adapter_state, nave_apply::AdapterState::Error) {
+        std::process::exit(1);
     }
     Ok(())
 }
