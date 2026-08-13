@@ -193,3 +193,222 @@ async fn provision_one(
     }
     mk(nave_apply::BranchState::Ok, observed, None)
 }
+
+pub async fn commit_bound(
+    pen_root: &Path,
+    pen: &Pen,
+    apply_ref: &str,
+    message: &str,
+    request: &nave_apply::CommitEnvelope,
+) -> AResult<nave_apply::CommitResult> {
+    let repo_ids: Vec<String> = request.repos.iter().map(|r| r.repo.clone()).collect();
+    if let Err(e) = nave_apply::validate_envelope_repos(request.protocol_version, &repo_ids) {
+        error_envelope!(CommitResult, e);
+    }
+    if let Err(e) = nave_apply::validate_ref_name(apply_ref) {
+        error_envelope!(CommitResult, e);
+    }
+    for r in &request.repos {
+        for p in &r.paths {
+            if let Err(e) = nave_apply::validate_bound_path(p) {
+                error_envelope!(CommitResult, e);
+            }
+        }
+    }
+
+    let mut state = read_apply_state(pen_root, &pen.name, apply_ref)?;
+    let mut results = Vec::with_capacity(request.repos.len());
+    for req in &request.repos {
+        let Some(pen_repo) = resolve_repo(pen, &req.repo) else {
+            results.push(nave_apply::CommitRepoResult {
+                repo: req.repo.clone(),
+                local_commit_sha: None,
+                state: nave_apply::CommitState::UnknownRepo,
+                reason: Some("repo is not part of this pen".into()),
+            });
+            continue;
+        };
+        let dir = pen_repo_clone_dir(pen_root, &pen.name, &pen_repo.owner, &pen_repo.name);
+        let Some(repo_state) = state.repos.get(&req.repo).cloned() else {
+            results.push(nave_apply::CommitRepoResult {
+                repo: req.repo.clone(),
+                local_commit_sha: None,
+                state: nave_apply::CommitState::NoApplyState,
+                reason: Some("no provisioned base recorded for this apply branch".into()),
+            });
+            continue;
+        };
+        let result = commit_one(&dir, req, apply_ref, &repo_state, message).await;
+        if let (nave_apply::CommitState::Ok, Some(sha)) = (&result.state, &result.local_commit_sha)
+        {
+            state.repos.get_mut(&req.repo).unwrap().local_commit_sha = Some(sha.clone());
+            write_apply_state(pen_root, &pen.name, apply_ref, &state)?;
+        }
+        results.push(result);
+    }
+
+    Ok(nave_apply::CommitResult {
+        protocol_version: nave_apply::PROTOCOL_VERSION,
+        adapter_state: nave_apply::AdapterState::Ok,
+        reason: None,
+        repos: results,
+    })
+}
+
+fn dirty_paths_from_porcelain(porcelain: &str) -> Vec<String> {
+    porcelain
+        .lines()
+        .filter(|l| l.len() > 3)
+        .flat_map(|l| {
+            let rest = l[3..].trim_matches('"');
+            if let Some((old, new)) = rest.split_once(" -> ") {
+                vec![old.to_string(), new.to_string()]
+            } else {
+                vec![rest.to_string()]
+            }
+        })
+        .collect()
+}
+
+async fn verify_pre_commit_state(
+    dir: &Path,
+    apply_ref: &str,
+    repo_state: &ApplyRepoState,
+) -> Result<(), String> {
+    let branch = git_output(dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .await
+        .map_err(|e| e.to_string())?;
+    if branch != apply_ref {
+        return Err("checked-out branch changed since provisioning".into());
+    }
+    let head = git_output(dir, &["rev-parse", "HEAD"])
+        .await
+        .map_err(|e| e.to_string())?;
+    if head != repo_state.expected_base_sha {
+        return Err("HEAD moved since provisioning — unexpected commit during exec".into());
+    }
+    let origin_url = git_output(dir, &["remote", "get-url", "origin"])
+        .await
+        .map_err(|e| e.to_string())?;
+    if origin_url != repo_state.expected_origin_url {
+        return Err("origin remote url changed since provisioning".into());
+    }
+    Ok(())
+}
+
+async fn read_dirty_paths(dir: &Path) -> Result<Vec<String>, String> {
+    let porcelain = git_output(dir, &["status", "--porcelain"])
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(dirty_paths_from_porcelain(&porcelain))
+}
+
+async fn stage_and_commit(dir: &Path, paths: &[String], message: &str) -> Result<String, String> {
+    for p in paths {
+        git_status(dir, &["add", "--", p])
+            .await
+            .map_err(|_| format!("failed to stage {p}"))?;
+    }
+    // Hooks disabled for Nave's own commit: nothing an ecosystem command planted in
+    // `.git/hooks` (pre-commit, commit-msg, etc.) fires during this call.
+    git_status(
+        dir,
+        &["-c", "core.hooksPath=/dev/null", "commit", "-m", message],
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    git_output(dir, &["rev-parse", "HEAD"])
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// The committed tree must touch only the requested paths — a defense-in-depth check even
+/// with hooks disabled and bounded staging, since it inspects the actual commit that landed.
+async fn verify_post_commit_bounds(
+    dir: &Path,
+    base_sha: &str,
+    sha: &str,
+    bound: &std::collections::HashSet<&str>,
+) -> Result<(), String> {
+    let changed = git_output(dir, &["diff", "--name-only", base_sha, sha])
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(extra) = changed.lines().find(|p| !bound.contains(*p)) {
+        return Err(format!(
+            "committed tree touched {extra}, outside bound_paths"
+        ));
+    }
+    Ok(())
+}
+
+async fn commit_one(
+    dir: &Path,
+    req: &nave_apply::CommitRepoRequest,
+    apply_ref: &str,
+    repo_state: &ApplyRepoState,
+    message: &str,
+) -> nave_apply::CommitRepoResult {
+    let mk = |state, sha: Option<String>, reason: Option<&str>| nave_apply::CommitRepoResult {
+        repo: req.repo.clone(),
+        local_commit_sha: sha,
+        state,
+        reason: reason.map(str::to_string),
+    };
+    if !dir.exists() {
+        return mk(
+            nave_apply::CommitState::MissingClone,
+            None,
+            Some("clone directory does not exist"),
+        );
+    }
+    if let Err(reason) = verify_pre_commit_state(dir, apply_ref, repo_state).await {
+        return mk(
+            nave_apply::CommitState::InvariantViolated,
+            None,
+            Some(&reason),
+        );
+    }
+
+    let dirty = match read_dirty_paths(dir).await {
+        Ok(d) => d,
+        Err(reason) => {
+            return mk(
+                nave_apply::CommitState::InvariantViolated,
+                None,
+                Some(&reason),
+            );
+        }
+    };
+    let bound: std::collections::HashSet<&str> = req.paths.iter().map(String::as_str).collect();
+    if let Some(extra) = dirty.iter().find(|p| !bound.contains(p.as_str())) {
+        return mk(
+            nave_apply::CommitState::DirtyOutsideBounds,
+            None,
+            Some(&format!("{extra} is dirty but not in bound_paths")),
+        );
+    }
+    if dirty.is_empty() {
+        return mk(nave_apply::CommitState::NothingToCommit, None, None);
+    }
+
+    let sha = match stage_and_commit(dir, &req.paths, message).await {
+        Ok(s) => s,
+        Err(reason) => {
+            return mk(
+                nave_apply::CommitState::InvariantViolated,
+                None,
+                Some(&reason),
+            );
+        }
+    };
+    if let Err(reason) =
+        verify_post_commit_bounds(dir, &repo_state.expected_base_sha, &sha, &bound).await
+    {
+        return mk(
+            nave_apply::CommitState::InvariantViolated,
+            Some(sha),
+            Some(&reason),
+        );
+    }
+    mk(nave_apply::CommitState::Ok, Some(sha), None)
+}
