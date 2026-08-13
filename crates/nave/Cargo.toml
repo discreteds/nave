@@ -32,6 +32,7 @@ indicatif = {workspace = true}
 [dev-dependencies]
 cargo-husky = {version = "1.5.0", default-features = false, features = ["user-hooks"]}
 nave_test_support = {workspace = true}
+tempfile = {workspace = true}
 
 [lints]
 workspace = true
