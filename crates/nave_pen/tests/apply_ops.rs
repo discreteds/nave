@@ -466,3 +466,268 @@ async fn reset_handles_never_pushed_repo_without_touching_remote() {
     assert!(res.repos[0].local_reset);
     assert!(!res.repos[0].remote_deleted);
 }
+
+#[tokio::test]
+async fn branch_request_with_two_repos_reports_independent_outcomes() {
+    let mut fx =
+        nave_test_support::init_pen_fixture("branch-multi", "acme", "docs", "develop").await;
+    let (_origin_b, base_sha_b) =
+        nave_test_support::add_repo_to_fixture(&mut fx, "acme", "web", "develop").await;
+
+    let req = nave_apply::BranchEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        apply_ref: "pulse/apply/multi".into(),
+        repos: vec![
+            nave_apply::BranchRepoRequest {
+                repo: "acme/docs".into(),
+                base_ref: "develop".into(),
+                expected_base_sha: fx.base_sha.clone(),
+            },
+            // Deliberately wrong expected SHA for the second repo — proves one repo's failure
+            // doesn't block or corrupt the other's success within the same request.
+            nave_apply::BranchRepoRequest {
+                repo: "acme/web".into(),
+                base_ref: "develop".into(),
+                expected_base_sha: "0".repeat(40),
+            },
+        ],
+    };
+    let res = provision_branch(fx.pen_root.path(), &fx.pen, &req)
+        .await
+        .unwrap();
+    assert!(matches!(res.adapter_state, nave_apply::AdapterState::Ok));
+    assert_eq!(res.repos.len(), 2);
+    let docs = res.repos.iter().find(|r| r.repo == "acme/docs").unwrap();
+    let web = res.repos.iter().find(|r| r.repo == "acme/web").unwrap();
+    assert!(matches!(docs.state, nave_apply::BranchState::Ok));
+    assert!(matches!(web.state, nave_apply::BranchState::StaleBase));
+
+    let dir_docs = nave_pen::pen_repo_clone_dir(fx.pen_root.path(), "branch-multi", "acme", "docs");
+    assert_eq!(
+        git_output(&dir_docs, &["rev-parse", "--abbrev-ref", "HEAD"]).await,
+        "pulse/apply/multi"
+    );
+    let dir_web = nave_pen::pen_repo_clone_dir(fx.pen_root.path(), "branch-multi", "acme", "web");
+    assert_eq!(
+        git_output(&dir_web, &["rev-parse", "--abbrev-ref", "HEAD"]).await,
+        fx.pen.branch
+    );
+    let _ = base_sha_b;
+}
+
+#[tokio::test]
+async fn branch_request_with_duplicate_repo_is_rejected_before_any_mutation() {
+    let fx = nave_test_support::init_pen_fixture("branch-dup", "acme", "docs", "develop").await;
+    let mut req = branch_req(&fx, "pulse/apply/dup");
+    req.repos.push(req.repos[0].clone());
+    let res = provision_branch(fx.pen_root.path(), &fx.pen, &req)
+        .await
+        .unwrap();
+    assert!(matches!(res.adapter_state, nave_apply::AdapterState::Error));
+    assert!(res.repos.is_empty());
+
+    // No mutation happened: still on the pen's own branch, apply_ref never created.
+    let dir = nave_pen::pen_repo_clone_dir(fx.pen_root.path(), "branch-dup", "acme", "docs");
+    assert_eq!(
+        git_output(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]).await,
+        fx.pen.branch
+    );
+    assert!(
+        !nave_pen::pen_repo_clone_dir(fx.pen_root.path(), "branch-dup", "acme", "docs")
+            .join(".git")
+            .join("refs/heads/pulse")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn ref_name_with_revision_shorthand_is_rejected() {
+    let fx =
+        nave_test_support::init_pen_fixture("branch-shorthand", "acme", "docs", "develop").await;
+    let mut req = branch_req(&fx, "@{-1}");
+    req.apply_ref = "@{-1}".into();
+    let res = provision_branch(fx.pen_root.path(), &fx.pen, &req)
+        .await
+        .unwrap();
+    assert!(matches!(res.adapter_state, nave_apply::AdapterState::Error));
+    assert!(res.repos.is_empty());
+}
+
+#[tokio::test]
+async fn push_fails_closed_when_only_the_push_url_changed() {
+    // A fetch-URL-only check would miss this: `git push` uses `remote.origin.pushurl` when
+    // set, independent of the fetch URL — this is exactly the bypass the closing review found.
+    let (fx, _) = provisioned_and_committed("push-pushurl", "pulse/apply/pu5").await;
+    let dir = nave_pen::pen_repo_clone_dir(fx.pen_root.path(), "push-pushurl", "acme", "docs");
+    let fetch_before = git_output(&dir, &["remote", "get-url", "origin"]).await;
+    git_status(
+        &dir,
+        &[
+            "config",
+            "remote.origin.pushurl",
+            "file:///elsewhere-push-only",
+        ],
+    )
+    .await;
+    let fetch_after = git_output(&dir, &["remote", "get-url", "origin"]).await;
+    assert_eq!(
+        fetch_before, fetch_after,
+        "fetch url must be unchanged by this test's setup"
+    );
+
+    let res = push_branch(fx.pen_root.path(), &fx.pen, "pulse/apply/pu5", &push_req())
+        .await
+        .unwrap();
+    assert!(matches!(
+        res.repos[0].state,
+        nave_apply::PushState::PushRejected
+    ));
+}
+
+#[tokio::test]
+async fn reset_fails_closed_when_the_push_url_changed_since_provisioning() {
+    let (fx, local_sha) = provisioned_and_committed("reset-pushurl", "pulse/apply/r5").await;
+    push_branch(fx.pen_root.path(), &fx.pen, "pulse/apply/r5", &push_req())
+        .await
+        .unwrap();
+    let dir = nave_pen::pen_repo_clone_dir(fx.pen_root.path(), "reset-pushurl", "acme", "docs");
+    git_status(
+        &dir,
+        &[
+            "config",
+            "remote.origin.pushurl",
+            "file:///elsewhere-push-only",
+        ],
+    )
+    .await;
+
+    let res = reset_branch(
+        fx.pen_root.path(),
+        &fx.pen,
+        "pulse/apply/r5",
+        &reset_req(Some(local_sha)),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        res.repos[0].state,
+        nave_apply::ResetState::EvidenceMismatch
+    ));
+    assert!(!res.repos[0].remote_deleted);
+    let remote_refs = git_output(
+        fx.origin.path(),
+        &["for-each-ref", "refs/heads/pulse/apply/r5"],
+    )
+    .await;
+    assert!(
+        !remote_refs.is_empty(),
+        "remote branch must survive an evidence mismatch"
+    );
+}
+
+#[tokio::test]
+async fn commit_fails_closed_when_checked_out_branch_changed() {
+    let fx = provisioned("commit-branch-changed", "pulse/apply/c6").await;
+    let dir =
+        nave_pen::pen_repo_clone_dir(fx.pen_root.path(), "commit-branch-changed", "acme", "docs");
+    // Simulate an ecosystem command switching branches mid-exec.
+    git_status(&dir, &["checkout", &fx.pen.branch]).await;
+    let res = commit_bound(
+        fx.pen_root.path(),
+        &fx.pen,
+        "pulse/apply/c6",
+        "m",
+        &commit_req(&["lockfile.json"]),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        res.repos[0].state,
+        nave_apply::CommitState::InvariantViolated
+    ));
+    assert!(
+        res.repos[0]
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("branch")
+    );
+}
+
+#[tokio::test]
+async fn commit_fails_closed_when_head_moved_since_provisioning() {
+    let fx = provisioned("commit-head-moved", "pulse/apply/c7").await;
+    let dir = nave_pen::pen_repo_clone_dir(fx.pen_root.path(), "commit-head-moved", "acme", "docs");
+    // Simulate an ecosystem command self-committing during exec.
+    std::fs::write(dir.join("surprise.txt"), "x").unwrap();
+    git_status(&dir, &["add", "surprise.txt"]).await;
+    git_status(
+        &dir,
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-m",
+            "unexpected",
+        ],
+    )
+    .await;
+    let res = commit_bound(
+        fx.pen_root.path(),
+        &fx.pen,
+        "pulse/apply/c7",
+        "m",
+        &commit_req(&["lockfile.json"]),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        res.repos[0].state,
+        nave_apply::CommitState::InvariantViolated
+    ));
+    assert!(
+        res.repos[0]
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("HEAD")
+    );
+}
+
+#[tokio::test]
+async fn reset_does_not_silently_succeed_when_ls_remote_cannot_reach_origin() {
+    let (fx, local_sha) = provisioned_and_committed("reset-unreachable", "pulse/apply/r6").await;
+    push_branch(fx.pen_root.path(), &fx.pen, "pulse/apply/r6", &push_req())
+        .await
+        .unwrap();
+    let dir = nave_pen::pen_repo_clone_dir(fx.pen_root.path(), "reset-unreachable", "acme", "docs");
+    // Point origin at a path that cannot be reached at all (not just "empty") — a failing,
+    // not an empty-succeeding, `ls-remote`. The old `unwrap_or_default()` bug treated this
+    // identically to a confirmed-absent branch and reported false success.
+    git_status(
+        &dir,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "file:///nonexistent/path/that/does/not/exist.git",
+        ],
+    )
+    .await;
+
+    let res = reset_branch(
+        fx.pen_root.path(),
+        &fx.pen,
+        "pulse/apply/r6",
+        &reset_req(Some(local_sha)),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !matches!(res.repos[0].state, nave_apply::ResetState::Ok),
+        "an unreachable origin must never report ok"
+    );
+    assert!(!res.repos[0].remote_deleted);
+}

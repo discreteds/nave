@@ -34,13 +34,19 @@ branch if the apply branch is currently checked out (every real pen clone has it
 checked out by `pen create`), then deletes the local apply branch. A checkout failure is
 reported, never silently discarded.
 
-**Remote** (only when `expected_pushed_sha` is given): a single atomic
-`git push --force-with-lease=<ref>:<expected> origin :<ref>` — not a separate "read the SHA,
-then delete" pair, which would leave a window for another actor to replace the branch between
-the read and the delete. `--force-with-lease` performs the SHA comparison and the delete as
-one server-side operation. If the remote branch is already gone (e.g. a previous `reset`
-already deleted it), that's treated as an idempotent success, not a CAS failure — `reset` is
-safe to call more than once.
+**Remote** (only when `expected_pushed_sha` is given): first verifies the origin remote's push
+URL is unchanged since `pen branch` provisioned it (`remote-deleted: false` and
+`state: "evidence-mismatch"` if not — this is a push, so it uses whichever URL `git push`
+would actually use, `remote.origin.pushurl` when configured, not just the fetch URL). Then
+probes `git ls-remote` for the branch: a **confirmed-empty** result (the probe itself
+succeeded and found nothing) is treated as an idempotent success — the branch is already gone,
+nothing to do. Anything else (the branch present, or the probe itself failing — network,
+auth, ...) falls through to the actual deletion: a single atomic
+`git push --force-with-lease=<ref>:<expected> origin :<ref>`, never a separate "read the SHA,
+then delete" pair (which would leave a window for another actor to replace the branch between
+the read and the delete). `--force-with-lease` performs the SHA comparison and the delete as
+one server-side operation, so a failed/unreachable probe never gets silently reported as
+success — only a *confirmed* absence short-circuits.
 
 ## Output
 
@@ -55,7 +61,9 @@ safe to call more than once.
 ```
 
 Per-repo `state`: `ok`, `remote-cas-mismatch` (the remote branch moved since it was pushed —
-left intact, not deleted), `missing-branch` (a local cleanup step failed), `unknown-repo`.
+left intact, not deleted), `evidence-mismatch` (the origin push URL changed since
+provisioning — left intact, not deleted), `missing-branch` (a local cleanup step failed),
+`unknown-repo`.
 
 ## Example
 

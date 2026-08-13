@@ -77,22 +77,32 @@ pub async fn provision_branch(
             },
             Some(pen_repo) => {
                 let dir = pen_repo_clone_dir(pen_root, &pen.name, &pen_repo.owner, &pen_repo.name);
-                let result = provision_one(&dir, req, &request.apply_ref).await;
+                let mut result = provision_one(&dir, req, &request.apply_ref).await;
                 if matches!(result.state, nave_apply::BranchState::Ok) {
-                    let origin_url = git_output(&dir, &["remote", "get-url", "origin"])
-                        .await
-                        .unwrap_or_default();
-                    let mut state = read_apply_state(pen_root, &pen.name, &request.apply_ref)?;
-                    state.repos.insert(
-                        req.repo.clone(),
-                        ApplyRepoState {
-                            base_ref: req.base_ref.clone(),
-                            expected_base_sha: req.expected_base_sha.clone(),
-                            expected_origin_url: origin_url,
-                            local_commit_sha: None,
-                        },
-                    );
-                    write_apply_state(pen_root, &pen.name, &request.apply_ref, &state)?;
+                    // Both reads must succeed or provisioning does not report `ok` — a
+                    // half-captured sidecar would silently break `commit`/`push`'s later
+                    // origin-integrity checks.
+                    let fetch_url = git_output(&dir, &["remote", "get-url", "origin"]).await;
+                    let push_url =
+                        git_output(&dir, &["remote", "get-url", "--push", "origin"]).await;
+                    if let (Ok(fetch_url), Ok(push_url)) = (fetch_url, push_url) {
+                        let mut state = read_apply_state(pen_root, &pen.name, &request.apply_ref)?;
+                        state.repos.insert(
+                            req.repo.clone(),
+                            ApplyRepoState {
+                                base_ref: req.base_ref.clone(),
+                                expected_base_sha: req.expected_base_sha.clone(),
+                                expected_origin_url: fetch_url,
+                                expected_push_url: push_url,
+                                local_commit_sha: None,
+                            },
+                        );
+                        write_apply_state(pen_root, &pen.name, &request.apply_ref, &state)?;
+                    } else {
+                        result.state = nave_apply::BranchState::EvidenceUnavailable;
+                        result.reason =
+                            Some("checked out but could not capture origin remote urls".into());
+                    }
                 }
                 result
             }
@@ -481,13 +491,17 @@ async fn verify_push_preconditions(
             "apply branch tip does not match the recorded commit".into(),
         ));
     }
-    let origin_url = git_output(dir, &["remote", "get-url", "origin"])
+    // Check the PUSH destination, not the fetch URL: `git push` uses `remote.origin.pushurl`
+    // when configured, which can differ from `remote.origin.url` — an ecosystem command that
+    // only changes the pushurl would pass a fetch-url-only check while still redirecting
+    // where this push actually lands.
+    let push_url = git_output(dir, &["remote", "get-url", "--push", "origin"])
         .await
         .map_err(|e| (nave_apply::PushState::PushRejected, e.to_string()))?;
-    if origin_url != repo_state.expected_origin_url {
+    if push_url != repo_state.expected_push_url {
         return Err((
             nave_apply::PushState::PushRejected,
-            "origin remote url changed since provisioning".into(),
+            "origin push url changed since provisioning".into(),
         ));
     }
     Ok(branch_sha)
@@ -507,10 +521,13 @@ async fn perform_push(
     let branch_sha = verify_push_preconditions(dir, apply_ref, repo_state)
         .await
         .map_err(|(state, reason)| (state, None, reason))?;
+    // `-u`/`--set-upstream` in addition to the explicit refspec: the refspec makes the push
+    // target unambiguous; `-u` makes upstream tracking reliable rather than incidental.
     if let Err(e) = git_status(
         dir,
         &[
             "push",
+            "--set-upstream",
             "origin",
             &format!("refs/heads/{apply_ref}:refs/heads/{apply_ref}"),
         ],
@@ -538,6 +555,15 @@ async fn perform_push(
             "push succeeded but remote sha could not be verified".into(),
         ));
     };
+    // The remote tip must be exactly what we just pushed — anything else means the push
+    // landed somewhere unexpected (or something else raced onto the branch mid-push).
+    if remote_sha != branch_sha {
+        return Err((
+            nave_apply::PushState::PushRejected,
+            Some(branch_sha.clone()),
+            format!("remote sha {remote_sha} does not match the pushed commit {branch_sha}"),
+        ));
+    }
     let upstream = git_output(
         dir,
         &[
@@ -629,6 +655,7 @@ pub async fn reset_branch(
         }
     }
 
+    let apply_state = read_apply_state(pen_root, &pen.name, apply_ref)?;
     let mut results = Vec::with_capacity(request.repos.len());
     for req in &request.repos {
         let result = match resolve_repo(pen, &req.repo) {
@@ -641,7 +668,8 @@ pub async fn reset_branch(
             },
             Some(pen_repo) => {
                 let dir = pen_repo_clone_dir(pen_root, &pen.name, &pen_repo.owner, &pen_repo.name);
-                reset_one(&dir, &pen.branch, apply_ref, req).await
+                let repo_state = apply_state.repos.get(&req.repo);
+                reset_one(&dir, &pen.branch, apply_ref, req, repo_state).await
             }
         };
         results.push(result);
@@ -655,20 +683,24 @@ pub async fn reset_branch(
     })
 }
 
-/// Local cleanup: idempotent, discards any dirty state first, moves off the apply branch if
-/// it's currently checked out (`pen.branch` always exists locally — every real pen clone is
-/// checked out onto it by `create_pen`'s `clone_and_branch`, replicated by the test fixture),
-/// then deletes the apply branch. A checkout failure is reported, never silently swallowed.
+/// Local cleanup: moves off the apply branch if it's currently checked out (`pen.branch`
+/// always exists locally — every real pen clone is checked out onto it by `create_pen`'s
+/// `clone_and_branch`, replicated by the test fixture), then deletes the apply branch. Every
+/// step's failure — including the dirty-state discard itself — is propagated, never silently
+/// swallowed: a `reset --hard`/`clean -fd` failure means the working tree may still hold
+/// partial apply output, which must never be reported as a clean `local_reset: true`.
 async fn reset_local(dir: &Path, pen_branch: &str, apply_ref: &str) -> Result<bool, String> {
-    let _ = git_status(dir, &["reset", "--hard", "HEAD"]).await;
-    let _ = git_status(dir, &["clean", "-fd"]).await;
-
-    let on_apply_ref = git_output(dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+    git_status(dir, &["reset", "--hard", "HEAD"])
         .await
-        .ok()
-        .as_deref()
-        == Some(apply_ref);
-    if on_apply_ref {
+        .map_err(|e| format!("failed to discard dirty state: {e}"))?;
+    git_status(dir, &["clean", "-fd"])
+        .await
+        .map_err(|e| format!("failed to clean untracked files: {e}"))?;
+
+    let current_branch = git_output(dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .await
+        .map_err(|e| e.to_string())?;
+    if current_branch == apply_ref {
         git_status(dir, &["checkout", pen_branch])
             .await
             .map_err(|e| {
@@ -686,7 +718,7 @@ async fn reset_local(dir: &Path, pen_branch: &str, apply_ref: &str) -> Result<bo
         ],
     )
     .await
-    .unwrap_or(false);
+    .map_err(|e| e.to_string())?;
     if !apply_branch_exists {
         return Ok(true); // already gone locally — idempotent no-op
     }
@@ -700,25 +732,49 @@ async fn reset_local(dir: &Path, pen_branch: &str, apply_ref: &str) -> Result<bo
 /// `--force-with-lease` push, not a `ls-remote`-then-delete pair (which would have a TOCTOU
 /// race for the delete decision — another actor could replace the ref between an `ls-remote`
 /// read and an unconditional delete). An `ls-remote` existence check runs first, but only as
-/// an idempotency short-circuit: `--force-with-lease` reports the SAME "stale info" rejection
-/// whether the ref moved to a different SHA or was already deleted (verified empirically), so
-/// without this check a second `reset` call on an already-cleaned-up branch would be
-/// misreported as a CAS mismatch. Checking existence first — then still gating the delete
-/// itself behind the atomic lease — preserves the CAS guarantee (a present-but-moved ref is
-/// still only ever deleted via the compare-and-swap) while making repeat calls idempotent.
-/// The lease value MUST be one glued `--force-with-lease=<ref>:<expect>` argv token — a
-/// space-separated form makes git treat the flag as valueless and shifts the value into the
-/// remote-name positional instead.
-async fn reset_remote(dir: &Path, apply_ref: &str, expected: &str) -> Result<bool, (bool, String)> {
-    let ls = git_output(
+/// an idempotency short-circuit — and only a CONFIRMED-empty result (the call itself
+/// succeeding with no matching ref) counts: `--force-with-lease` reports the SAME "stale info"
+/// rejection whether the ref moved to a different SHA or was already deleted (verified
+/// empirically), so without this check a second `reset` call on an already-cleaned-up branch
+/// would be misreported as a CAS mismatch. If the `ls-remote` probe itself fails (network,
+/// auth, ...), that failure is never treated as "confirmed absent" — it falls through to the
+/// same atomic delete attempt, which is authoritative either way. The lease value MUST be one
+/// glued `--force-with-lease=<ref>:<expect>` argv token — a space-separated form makes git
+/// treat the flag as valueless and shifts the value into the remote-name positional instead.
+async fn reset_remote(
+    dir: &Path,
+    apply_ref: &str,
+    expected: &str,
+    expected_push_url: Option<&str>,
+) -> Result<bool, (nave_apply::ResetState, String)> {
+    if let Some(expected_push_url) = expected_push_url {
+        match git_output(dir, &["remote", "get-url", "--push", "origin"]).await {
+            Ok(url) if url == expected_push_url => {}
+            Ok(_) => {
+                return Err((
+                    nave_apply::ResetState::EvidenceMismatch,
+                    "origin push url changed since provisioning".into(),
+                ));
+            }
+            Err(e) => {
+                return Err((
+                    nave_apply::ResetState::EvidenceMismatch,
+                    format!("could not verify origin push url: {e}"),
+                ));
+            }
+        }
+    }
+
+    match git_output(
         dir,
         &["ls-remote", "origin", &format!("refs/heads/{apply_ref}")],
     )
     .await
-    .unwrap_or_default();
-    if ls.trim().is_empty() {
-        return Ok(true); // already gone remotely — idempotent no-op
+    {
+        Ok(ls) if ls.trim().is_empty() => return Ok(true), // confirmed absent — idempotent no-op
+        Ok(_) | Err(_) => {} // present, or unknown — fall through to the authoritative delete
     }
+
     let lease = format!("--force-with-lease=refs/heads/{apply_ref}:{expected}");
     let out = tokio::process::Command::new("git")
         .arg("-C")
@@ -731,18 +787,21 @@ async fn reset_remote(dir: &Path, apply_ref: &str, expected: &str) -> Result<boo
         ])
         .output()
         .await
-        .map_err(|e| (false, e.to_string()))?;
+        .map_err(|e| (nave_apply::ResetState::MissingBranch, e.to_string()))?;
     if out.status.success() {
         return Ok(true);
     }
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     if stderr.contains("stale info") || stderr.contains("rejected") {
         return Err((
-            true,
+            nave_apply::ResetState::RemoteCasMismatch,
             "remote apply branch has moved since it was pushed — left intact".into(),
         ));
     }
-    Err((false, format!("remote delete failed: {}", stderr.trim())))
+    Err((
+        nave_apply::ResetState::MissingBranch,
+        format!("remote delete failed: {}", stderr.trim()),
+    ))
 }
 
 async fn reset_one(
@@ -750,6 +809,7 @@ async fn reset_one(
     pen_branch: &str,
     apply_ref: &str,
     req: &nave_apply::ResetRepoRequest,
+    repo_state: Option<&ApplyRepoState>,
 ) -> nave_apply::ResetRepoResult {
     if !dir.exists() {
         return nave_apply::ResetRepoResult {
@@ -770,15 +830,12 @@ async fn reset_one(
     let mut state = nave_apply::ResetState::Ok;
     if reason.is_none() {
         if let Some(expected) = &req.expected_pushed_sha {
-            match reset_remote(dir, apply_ref, expected).await {
+            let expected_push_url = repo_state.map(|s| s.expected_push_url.as_str());
+            match reset_remote(dir, apply_ref, expected, expected_push_url).await {
                 Ok(deleted) => remote_deleted = deleted,
-                Err((cas_mismatch, msg)) => {
+                Err((s, msg)) => {
                     reason = Some(msg);
-                    state = if cas_mismatch {
-                        nave_apply::ResetState::RemoteCasMismatch
-                    } else {
-                        nave_apply::ResetState::MissingBranch
-                    };
+                    state = s;
                 }
             }
         }

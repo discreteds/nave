@@ -18,28 +18,35 @@ if the two ever drift, the crate is authoritative.
 1. **Per-repo `state` enum values are closed sets, kebab-case on the wire.** The pulse-gh
    adapter's `_validate_apply_result` (or equivalent) must check membership against these exact
    strings — an unrecognized value is a validation error, never silently accepted:
-   - `branch`: `ok`, `stale-base`, `exists`, `missing-ref`, `not-a-commit`, `unknown-repo`
+   - `branch`: `ok`, `stale-base`, `exists`, `missing-ref`, `not-a-commit`, `unknown-repo`,
+     `evidence-unavailable` (checkout succeeded but the origin remote's fetch/push URLs could
+     not be captured — never reported as `ok`, since `commit`/`push` depend on that evidence)
    - `commit`: `ok`, `nothing-to-commit`, `dirty-outside-bounds`, `invariant-violated`,
      `missing-clone`, `no-apply-state`, `unknown-repo`
    - `push`: `ok`, `missing-branch`, `diverged`, `push-rejected`, `no-apply-state`, `unknown-repo`
-   - `reset`: `ok`, `remote-cas-mismatch`, `missing-branch`, `unknown-repo`
+   - `reset`: `ok`, `remote-cas-mismatch`, `missing-branch`, `unknown-repo`, `evidence-mismatch`
+     (the origin push URL recorded at provisioning time no longer matches — distinct from
+     `remote-cas-mismatch`, which is specifically the pushed-SHA lease failing)
    - envelope-level `adapter_state`: `ok`, `error` (snake_case, not kebab-case — different field)
 2. **`pen branch`'s `apply_ref` is a single envelope-level field, not per repo.** One branch
    provisioning call names one apply branch across every repo in the request. Build the request
    as `{"protocol_version":1,"apply_ref":"pulse/apply/{id}","repos":[{repo,base_ref,expected_base_sha}, ...]}`.
-3. **`pen commit`'s request carries only `{repo, paths}` per repo.** Neither `expected_base_sha`
-   (Nave checks this itself against a server-side sidecar `pen branch` wrote) nor `message` (a
-   separate CLI/function argument, `-m <message>`) belongs in the request body. Python's
-   `pen_commit(runner, name, request, message)` signature already has the right shape — just
-   don't try to also stuff `message` into `request`.
+3. **`pen commit`'s request carries only `{repo, paths}` per repo — and its CLI/adapter
+   signature is `pen_commit(runner, name, branch, request, message)`, with `branch` as a
+   positional argument (matching `nave pen commit <NAME> <BRANCH> --request <FILE> -m
+   <MESSAGE>` below), not folded into `request`.** Neither `expected_base_sha` (Nave checks
+   this itself against a server-side sidecar `pen branch` wrote) nor `message` (the separate
+   `-m`/`--message` flag) belongs in the request body.
 4. **An `"error"` envelope's `repos` array is always empty; the failure reason is the top-level
    `reason` field.** Every `*Result` type gained a top-level `reason: Option<String>` alongside
    the existing per-repo `reason` fields. The adapter's envelope-error path should read
    `result["reason"]`, never scan `result["repos"]` for a sentinel/placeholder entry.
-5. **`pen status --json` gains `clone_path: Option<String>` per repo** (`null` when the clone
-   directory doesn't exist) — the only change to an existing verb. `pen_status`'s Python decode
-   shape is otherwise unchanged (still the array-rooted `Vec<RepoState>`, normalized to
-   `{"repos": [...]}` by the adapter as before).
+5. **`RepoState` (shared by `pen status --json` and `pen list --json`) gains `clone_path:
+   Option<String>` per repo** (`null` when the clone directory doesn't exist) — the only
+   change to two existing verbs, not just `pen status`. `pen_status`'s Python decode shape is
+   otherwise unchanged (still the array-rooted `Vec<RepoState>`, normalized to
+   `{"repos": [...]}` by the adapter as before); if the pulse-gh adapter also decodes `pen
+   list --json`, its per-repo entries gain the same field.
 
 ## Wire types, verbatim (from `crates/nave_apply/src/lib.rs`)
 
@@ -53,7 +60,7 @@ pub struct CapabilitiesResult { protocol_version: u32, verbs: Vec<String>, adapt
 
 pub struct BranchEnvelope { protocol_version: u32, apply_ref: String, repos: Vec<BranchRepoRequest> }
 pub struct BranchRepoRequest { repo: String, base_ref: String, expected_base_sha: String }
-pub enum BranchState { Ok, StaleBase, Exists, MissingRef, NotACommit, UnknownRepo }   // kebab-case
+pub enum BranchState { Ok, StaleBase, Exists, MissingRef, NotACommit, UnknownRepo, EvidenceUnavailable }   // kebab-case
 pub struct BranchRepoResult { repo: String, base_ref: String, expected_base_sha: String, observed_base_sha: String, apply_ref: String, state: BranchState, reason: Option<String> }
 pub struct BranchResult { protocol_version: u32, adapter_state: AdapterState, reason: Option<String>, repos: Vec<BranchRepoResult> }
 
@@ -71,7 +78,7 @@ pub struct PushResult { protocol_version: u32, adapter_state: AdapterState, reas
 
 pub struct ResetEnvelope { protocol_version: u32, repos: Vec<ResetRepoRequest> }
 pub struct ResetRepoRequest { repo: String, expected_pushed_sha: Option<String> }   // omit or null when never pushed
-pub enum ResetState { Ok, RemoteCasMismatch, MissingBranch, UnknownRepo }
+pub enum ResetState { Ok, RemoteCasMismatch, MissingBranch, UnknownRepo, EvidenceMismatch }
 pub struct ResetRepoResult { repo: String, local_reset: bool, remote_deleted: bool, state: ResetState, reason: Option<String> }
 pub struct ResetResult { protocol_version: u32, adapter_state: AdapterState, reason: Option<String>, repos: Vec<ResetRepoResult> }
 ```
@@ -94,8 +101,9 @@ nave pen reset <NAME> <BRANCH> --request <FILE> [--json]
 - `<NAME>` is the pen name (positional, always first).
 - `<BRANCH>` is the apply branch name — a positional, **not** part of the request body — for
   `commit`/`push`/`reset` (matches the pulse-gh interface table's own
-  `pen_commit(runner, name, request, message)` / `pen_push(runner, name, branch, request)` /
-  `pen_reset(runner, name, branch, request)` signatures).
+  `pen_commit(runner, name, branch, request, message)` / `pen_push(runner, name, branch, request)` /
+  `pen_reset(runner, name, branch, request)` signatures — note `branch` must be added as a
+  positional to `pen_commit`'s signature; the original pulse-gh Task 1 table omitted it).
 - `--request <FILE>` always names a file path — the JSON body is **never** passed as an inline
   shell argument (mirrors the existing `nave materialize --request` convention).
 - `capabilities` takes no pen name — it's a protocol-level probe, not tied to a pen instance.

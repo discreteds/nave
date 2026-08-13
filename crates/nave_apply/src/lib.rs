@@ -55,12 +55,27 @@ pub fn validate_envelope_repos(
     Ok(())
 }
 
+/// Mirrors `git check-ref-format --branch`'s rules (plus a leading-`-` ban, since these names
+/// are always passed as bare git CLI arguments): no empty ref or empty `/`-separated
+/// component; no component starting with `.` or ending in `.lock`; no `..` anywhere; no
+/// `@{` (git's reflog/revision shorthand, e.g. `@{-1}`, `@{upstream}`); no backslash; no
+/// leading/trailing/doubled `/`; no trailing `.`; not the bare string `@`; none of the
+/// ASCII-control/space/`~`/`^`/`:`/`?`/`*`/`[` characters git itself forbids in refs.
+// Not a filesystem-extension check (`Path::extension` semantics don't apply to ref
+// segments) — `.lock` here is git's own ref-locking suffix, which git itself matches
+// case-sensitively (git refs are case-sensitive), so a case-insensitive comparison would
+// be the wrong fix, not a safer one.
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
 pub fn validate_ref_name(name: &str) -> Result<(), ValidationError> {
     let bad = name.is_empty()
+        || name == "@"
         || name.starts_with('/')
         || name.ends_with('/')
+        || name.ends_with('.')
         || name.contains("//")
         || name.contains("..")
+        || name.contains("@{")
+        || name.contains('\\')
         || name.starts_with('-')
         || name.chars().any(|c| {
             c.is_control()
@@ -71,7 +86,10 @@ pub fn validate_ref_name(name: &str) -> Result<(), ValidationError> {
                 || c == '?'
                 || c == '*'
                 || c == '['
-        });
+        })
+        || name
+            .split('/')
+            .any(|seg| seg.is_empty() || seg.starts_with('.') || seg.ends_with(".lock"));
     if bad {
         return Err(ValidationError::InvalidRefName(name.to_string()));
     }
@@ -176,6 +194,9 @@ pub enum BranchState {
     MissingRef,
     NotACommit,
     UnknownRepo,
+    /// Checkout succeeded but the origin remote's fetch/push URLs could not be captured for
+    /// the sidecar — never reported as `ok`, since `commit`/`push` depend on that evidence.
+    EvidenceUnavailable,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -367,7 +388,6 @@ impl Serialize for ResetEnvelope {
         st.end()
     }
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ResetState {
@@ -375,6 +395,9 @@ pub enum ResetState {
     RemoteCasMismatch,
     MissingBranch,
     UnknownRepo,
+    /// Recorded provisioning evidence (currently: the origin push URL) no longer matches —
+    /// distinct from `RemoteCasMismatch`, which is specifically the pushed-SHA lease failing.
+    EvidenceMismatch,
 }
 
 #[derive(Debug, Clone, Serialize)]

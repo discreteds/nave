@@ -65,7 +65,9 @@ Per repo:
 ```
 
 Per-repo `state`: `ok`, `stale-base`, `exists`, `missing-ref`, `not-a-commit`, `unknown-repo`
-(the requested repo isn't part of this pen). Envelope `adapter_state` is `ok` whenever the
+(the requested repo isn't part of this pen), `evidence-unavailable` (checkout succeeded but
+the origin remote's fetch/push URLs couldn't be captured for the sidecar `commit`/`push` rely
+on — never reported as `ok`). Envelope `adapter_state` is `ok` whenever the
 command ran and produced a determinate result for every repo — even if some repos report a
 controlled failure state. `error` is reserved for request-level failures (bad
 `protocol_version`, malformed JSON, invalid ref/sha syntax); an `error` envelope carries a

@@ -20,8 +20,8 @@ commit.
 }
 ```
 
-Just the repo identity — `push` reads the committed SHA and origin URL from the sidecar
-`pen commit` wrote.
+Just the repo identity — `push` reads the committed SHA and origin URLs from the sidecar
+`pen commit`/`pen branch` wrote.
 
 ## What it does
 
@@ -29,13 +29,17 @@ Per repo:
 
 1. Verifies `refs/heads/<BRANCH>` locally still equals the recorded commit SHA (`diverged` if
    not).
-2. Verifies `origin`'s URL is unchanged since provisioning (`push-rejected` if not).
-3. Pushes with an explicit fully-qualified refspec
+2. Verifies origin's **push** URL (`git remote get-url --push origin` — the URL `git push`
+   actually uses, which can differ from the fetch URL when `remote.origin.pushurl` is
+   configured) is unchanged since provisioning (`push-rejected` if not — checking only the
+   fetch URL would miss a redirected push destination).
+3. Pushes with `--set-upstream` and an explicit fully-qualified refspec
    (`refs/heads/<BRANCH>:refs/heads/<BRANCH>`) — idempotent: re-pushing identical history is a
    no-op fast-forward.
 4. Reads back `remote`, `remote_ref`, `remote_sha` (via `origin/<BRANCH>`, which git updates
-   locally right after a successful push), and `upstream`. Any of these failing to read is
-   treated as a push-evidence failure, not a silent `ok` with holes in it.
+   locally right after a successful push), and `upstream`, and requires `remote_sha` to equal
+   the just-pushed local commit SHA exactly. Any of these failing to read, or `remote_sha`
+   disagreeing, is treated as a push-evidence failure, not a silent `ok` with holes in it.
 
 ## Output
 
