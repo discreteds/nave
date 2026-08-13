@@ -49,6 +49,8 @@ pub(crate) enum PenAction {
     Commit(PenCommitArgs),
     /// Push the apply branch's committed local tip, verifying evidence before reporting ok.
     Push(PenPushArgs),
+    /// Discard a partial apply attempt: CAS-guarded local + remote branch cleanup.
+    Reset(PenResetArgs),
 }
 
 #[derive(Debug, Args)]
@@ -234,6 +236,16 @@ pub(crate) struct PenPushArgs {
     pub json: bool,
 }
 
+#[derive(Debug, Args)]
+pub(crate) struct PenResetArgs {
+    pub name: String,
+    pub branch: String,
+    #[arg(long)]
+    pub request: std::path::PathBuf,
+    #[arg(long)]
+    pub json: bool,
+}
+
 pub(crate) async fn run(args: PenArgs) -> Result<()> {
     match args.action {
         PenAction::Create(a) => run_create(a).await,
@@ -251,6 +263,7 @@ pub(crate) async fn run(args: PenArgs) -> Result<()> {
         PenAction::Branch(a) => run_branch(a).await,
         PenAction::Commit(a) => run_commit(a).await,
         PenAction::Push(a) => run_push(a).await,
+        PenAction::Reset(a) => run_reset(a).await,
     }
 }
 
@@ -605,6 +618,36 @@ async fn run_push(args: PenPushArgs) -> Result<()> {
         }
     };
     let result = nave_pen::apply_ops::push_branch(&root, &pen, &args.branch, &request).await?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    }
+    if matches!(result.adapter_state, nave_apply::AdapterState::Error) {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+async fn run_reset(args: PenResetArgs) -> Result<()> {
+    let cfg = load_default()?;
+    let root = resolve_pen_root(&cfg.pen)?;
+    let pen = load_pen(&root, &args.name)?;
+    let raw = std::fs::read_to_string(&args.request).context("reading request file")?;
+    let request: nave_apply::ResetEnvelope = match serde_json::from_str(&raw) {
+        Ok(r) => r,
+        Err(e) => {
+            let result = nave_apply::ResetResult {
+                protocol_version: nave_apply::PROTOCOL_VERSION,
+                adapter_state: nave_apply::AdapterState::Error,
+                reason: Some(format!("invalid request: {e}")),
+                repos: vec![],
+            };
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
+            std::process::exit(1);
+        }
+    };
+    let result = nave_pen::apply_ops::reset_branch(&root, &pen, &args.branch, &request).await?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     }

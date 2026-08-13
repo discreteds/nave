@@ -18,7 +18,7 @@ use std::path::Path;
 
 use anyhow::Result as AResult;
 
-use crate::apply_state::{ApplyRepoState, read_apply_state, write_apply_state};
+use crate::apply_state::{ApplyRepoState, clear_apply_state, read_apply_state, write_apply_state};
 use crate::git_util::{git_ok, git_output, git_status};
 use crate::storage::{Pen, PenRepo, pen_repo_clone_dir};
 
@@ -605,5 +605,193 @@ async fn push_one(
             reason: Some(reason),
             ..base
         },
+    }
+}
+
+pub async fn reset_branch(
+    pen_root: &Path,
+    pen: &Pen,
+    apply_ref: &str,
+    request: &nave_apply::ResetEnvelope,
+) -> AResult<nave_apply::ResetResult> {
+    let repo_ids: Vec<String> = request.repos.iter().map(|r| r.repo.clone()).collect();
+    if let Err(e) = nave_apply::validate_envelope_repos(request.protocol_version, &repo_ids) {
+        error_envelope!(ResetResult, e);
+    }
+    if let Err(e) = nave_apply::validate_ref_name(apply_ref) {
+        error_envelope!(ResetResult, e);
+    }
+    for r in &request.repos {
+        if let Some(sha) = &r.expected_pushed_sha
+            && let Err(e) = nave_apply::validate_hex_sha(sha)
+        {
+            error_envelope!(ResetResult, e);
+        }
+    }
+
+    let mut results = Vec::with_capacity(request.repos.len());
+    for req in &request.repos {
+        let result = match resolve_repo(pen, &req.repo) {
+            None => nave_apply::ResetRepoResult {
+                repo: req.repo.clone(),
+                local_reset: false,
+                remote_deleted: false,
+                state: nave_apply::ResetState::UnknownRepo,
+                reason: Some("repo is not part of this pen".into()),
+            },
+            Some(pen_repo) => {
+                let dir = pen_repo_clone_dir(pen_root, &pen.name, &pen_repo.owner, &pen_repo.name);
+                reset_one(&dir, &pen.branch, apply_ref, req).await
+            }
+        };
+        results.push(result);
+    }
+    clear_apply_state(pen_root, &pen.name, apply_ref)?;
+    Ok(nave_apply::ResetResult {
+        protocol_version: nave_apply::PROTOCOL_VERSION,
+        adapter_state: nave_apply::AdapterState::Ok,
+        reason: None,
+        repos: results,
+    })
+}
+
+/// Local cleanup: idempotent, discards any dirty state first, moves off the apply branch if
+/// it's currently checked out (`pen.branch` always exists locally — every real pen clone is
+/// checked out onto it by `create_pen`'s `clone_and_branch`, replicated by the test fixture),
+/// then deletes the apply branch. A checkout failure is reported, never silently swallowed.
+async fn reset_local(dir: &Path, pen_branch: &str, apply_ref: &str) -> Result<bool, String> {
+    let _ = git_status(dir, &["reset", "--hard", "HEAD"]).await;
+    let _ = git_status(dir, &["clean", "-fd"]).await;
+
+    let on_apply_ref = git_output(dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .await
+        .ok()
+        .as_deref()
+        == Some(apply_ref);
+    if on_apply_ref {
+        git_status(dir, &["checkout", pen_branch])
+            .await
+            .map_err(|e| {
+                format!("failed to check out {pen_branch} before deleting apply branch: {e}")
+            })?;
+    }
+
+    let apply_branch_exists = git_ok(
+        dir,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{apply_ref}"),
+        ],
+    )
+    .await
+    .unwrap_or(false);
+    if !apply_branch_exists {
+        return Ok(true); // already gone locally — idempotent no-op
+    }
+    git_status(dir, &["branch", "-D", apply_ref])
+        .await
+        .map(|()| true)
+        .map_err(|_| "failed to delete local apply branch".to_string())
+}
+
+/// Remote cleanup: the actual delete decision is a single atomic
+/// `--force-with-lease` push, not a `ls-remote`-then-delete pair (which would have a TOCTOU
+/// race for the delete decision — another actor could replace the ref between an `ls-remote`
+/// read and an unconditional delete). An `ls-remote` existence check runs first, but only as
+/// an idempotency short-circuit: `--force-with-lease` reports the SAME "stale info" rejection
+/// whether the ref moved to a different SHA or was already deleted (verified empirically), so
+/// without this check a second `reset` call on an already-cleaned-up branch would be
+/// misreported as a CAS mismatch. Checking existence first — then still gating the delete
+/// itself behind the atomic lease — preserves the CAS guarantee (a present-but-moved ref is
+/// still only ever deleted via the compare-and-swap) while making repeat calls idempotent.
+/// The lease value MUST be one glued `--force-with-lease=<ref>:<expect>` argv token — a
+/// space-separated form makes git treat the flag as valueless and shifts the value into the
+/// remote-name positional instead.
+async fn reset_remote(dir: &Path, apply_ref: &str, expected: &str) -> Result<bool, (bool, String)> {
+    let ls = git_output(
+        dir,
+        &["ls-remote", "origin", &format!("refs/heads/{apply_ref}")],
+    )
+    .await
+    .unwrap_or_default();
+    if ls.trim().is_empty() {
+        return Ok(true); // already gone remotely — idempotent no-op
+    }
+    let lease = format!("--force-with-lease=refs/heads/{apply_ref}:{expected}");
+    let out = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "push",
+            &lease,
+            "origin",
+            &format!(":refs/heads/{apply_ref}"),
+        ])
+        .output()
+        .await
+        .map_err(|e| (false, e.to_string()))?;
+    if out.status.success() {
+        return Ok(true);
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    if stderr.contains("stale info") || stderr.contains("rejected") {
+        return Err((
+            true,
+            "remote apply branch has moved since it was pushed — left intact".into(),
+        ));
+    }
+    Err((false, format!("remote delete failed: {}", stderr.trim())))
+}
+
+async fn reset_one(
+    dir: &Path,
+    pen_branch: &str,
+    apply_ref: &str,
+    req: &nave_apply::ResetRepoRequest,
+) -> nave_apply::ResetRepoResult {
+    if !dir.exists() {
+        return nave_apply::ResetRepoResult {
+            repo: req.repo.clone(),
+            local_reset: false,
+            remote_deleted: false,
+            state: nave_apply::ResetState::MissingBranch,
+            reason: Some("clone directory does not exist".into()),
+        };
+    }
+
+    let (local_reset, mut reason) = match reset_local(dir, pen_branch, apply_ref).await {
+        Ok(ok) => (ok, None),
+        Err(reason) => (false, Some(reason)),
+    };
+
+    let mut remote_deleted = false;
+    let mut state = nave_apply::ResetState::Ok;
+    if reason.is_none() {
+        if let Some(expected) = &req.expected_pushed_sha {
+            match reset_remote(dir, apply_ref, expected).await {
+                Ok(deleted) => remote_deleted = deleted,
+                Err((cas_mismatch, msg)) => {
+                    reason = Some(msg);
+                    state = if cas_mismatch {
+                        nave_apply::ResetState::RemoteCasMismatch
+                    } else {
+                        nave_apply::ResetState::MissingBranch
+                    };
+                }
+            }
+        }
+        // expected_pushed_sha == None: never pushed, nothing remote to clean up — idempotent.
+    } else {
+        state = nave_apply::ResetState::MissingBranch;
+    }
+
+    nave_apply::ResetRepoResult {
+        repo: req.repo.clone(),
+        local_reset,
+        remote_deleted,
+        state,
+        reason,
     }
 }

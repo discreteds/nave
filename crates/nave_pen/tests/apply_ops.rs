@@ -10,7 +10,9 @@
 //! tests avoid this: they link `nave_pen` exactly once, the same instance
 //! `nave_test_support` links.
 use nave_apply::PROTOCOL_VERSION;
-use nave_pen::apply_ops::{capabilities, commit_bound, provision_branch, push_branch};
+use nave_pen::apply_ops::{
+    capabilities, commit_bound, provision_branch, push_branch, reset_branch,
+};
 
 /// Minimal local git-output helper for asserting on-disk state after a verb
 /// call. `git_util`'s equivalent is crate-private and unreachable here.
@@ -349,4 +351,118 @@ async fn push_fails_closed_when_origin_remote_changed_since_commit() {
         res.repos[0].state,
         nave_apply::PushState::PushRejected
     ));
+}
+
+fn reset_req(expected_pushed_sha: Option<String>) -> nave_apply::ResetEnvelope {
+    nave_apply::ResetEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        repos: vec![nave_apply::ResetRepoRequest {
+            repo: "acme/docs".into(),
+            expected_pushed_sha,
+        }],
+    }
+}
+
+#[tokio::test]
+async fn reset_deletes_remote_ref_only_on_sha_match() {
+    let (fx, local_sha) = provisioned_and_committed("reset-fx", "pulse/apply/r1").await;
+    push_branch(fx.pen_root.path(), &fx.pen, "pulse/apply/r1", &push_req())
+        .await
+        .unwrap();
+
+    let res = reset_branch(
+        fx.pen_root.path(),
+        &fx.pen,
+        "pulse/apply/r1",
+        &reset_req(Some(local_sha)),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(res.repos[0].state, nave_apply::ResetState::Ok));
+    assert!(res.repos[0].local_reset);
+    assert!(res.repos[0].remote_deleted);
+
+    let remote_refs = git_output(
+        fx.origin.path(),
+        &["for-each-ref", "refs/heads/pulse/apply/r1"],
+    )
+    .await;
+    assert!(remote_refs.is_empty());
+
+    let dir = nave_pen::pen_repo_clone_dir(fx.pen_root.path(), "reset-fx", "acme", "docs");
+    let branch = git_output(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]).await;
+    assert_eq!(branch, fx.pen.branch);
+}
+
+#[tokio::test]
+async fn reset_skips_remote_delete_on_cas_mismatch() {
+    let (fx, _) = provisioned_and_committed("reset-fx2", "pulse/apply/r2").await;
+    push_branch(fx.pen_root.path(), &fx.pen, "pulse/apply/r2", &push_req())
+        .await
+        .unwrap();
+
+    let res = reset_branch(
+        fx.pen_root.path(),
+        &fx.pen,
+        "pulse/apply/r2",
+        &reset_req(Some("f".repeat(40))),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        res.repos[0].state,
+        nave_apply::ResetState::RemoteCasMismatch
+    ));
+    assert!(!res.repos[0].remote_deleted);
+    let remote_refs = git_output(
+        fx.origin.path(),
+        &["for-each-ref", "refs/heads/pulse/apply/r2"],
+    )
+    .await;
+    assert!(
+        !remote_refs.is_empty(),
+        "remote branch must survive a CAS mismatch"
+    );
+}
+
+#[tokio::test]
+async fn reset_is_idempotent_when_called_twice() {
+    let (fx, local_sha) = provisioned_and_committed("reset-fx3", "pulse/apply/r3").await;
+    push_branch(fx.pen_root.path(), &fx.pen, "pulse/apply/r3", &push_req())
+        .await
+        .unwrap();
+    reset_branch(
+        fx.pen_root.path(),
+        &fx.pen,
+        "pulse/apply/r3",
+        &reset_req(Some(local_sha.clone())),
+    )
+    .await
+    .unwrap();
+    let second = reset_branch(
+        fx.pen_root.path(),
+        &fx.pen,
+        "pulse/apply/r3",
+        &reset_req(Some(local_sha)),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(second.repos[0].state, nave_apply::ResetState::Ok));
+    assert!(second.repos[0].local_reset);
+}
+
+#[tokio::test]
+async fn reset_handles_never_pushed_repo_without_touching_remote() {
+    let fx = provisioned("reset-fx4", "pulse/apply/r4").await;
+    let res = reset_branch(
+        fx.pen_root.path(),
+        &fx.pen,
+        "pulse/apply/r4",
+        &reset_req(None),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(res.repos[0].state, nave_apply::ResetState::Ok));
+    assert!(res.repos[0].local_reset);
+    assert!(!res.repos[0].remote_deleted);
 }

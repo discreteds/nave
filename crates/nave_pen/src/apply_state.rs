@@ -64,8 +64,6 @@ pub(crate) fn write_apply_state(
     std::fs::rename(&tmp, &path).with_context(|| format!("renaming into {}", path.display()))
 }
 
-// No non-test consumer until Task 9's `reset_branch`.
-#[allow(dead_code)]
 pub(crate) fn clear_apply_state(pen_root: &Path, pen_name: &str, apply_ref: &str) -> Result<()> {
     let path = apply_state_path(pen_root, pen_name, apply_ref);
     if path.exists() {
