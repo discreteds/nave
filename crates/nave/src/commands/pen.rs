@@ -47,6 +47,8 @@ pub(crate) enum PenAction {
     Branch(PenBranchArgs),
     /// Bounded-stage and commit dirty apply-branch paths, with post-exec invariant checks.
     Commit(PenCommitArgs),
+    /// Push the apply branch's committed local tip, verifying evidence before reporting ok.
+    Push(PenPushArgs),
 }
 
 #[derive(Debug, Args)]
@@ -222,6 +224,16 @@ pub(crate) struct PenCommitArgs {
     pub json: bool,
 }
 
+#[derive(Debug, Args)]
+pub(crate) struct PenPushArgs {
+    pub name: String,
+    pub branch: String,
+    #[arg(long)]
+    pub request: std::path::PathBuf,
+    #[arg(long)]
+    pub json: bool,
+}
+
 pub(crate) async fn run(args: PenArgs) -> Result<()> {
     match args.action {
         PenAction::Create(a) => run_create(a).await,
@@ -238,6 +250,7 @@ pub(crate) async fn run(args: PenArgs) -> Result<()> {
         PenAction::Capabilities(a) => run_capabilities(&a),
         PenAction::Branch(a) => run_branch(a).await,
         PenAction::Commit(a) => run_commit(a).await,
+        PenAction::Push(a) => run_push(a).await,
     }
 }
 
@@ -562,6 +575,36 @@ async fn run_commit(args: PenCommitArgs) -> Result<()> {
     let result =
         nave_pen::apply_ops::commit_bound(&root, &pen, &args.branch, &args.message, &request)
             .await?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    }
+    if matches!(result.adapter_state, nave_apply::AdapterState::Error) {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+async fn run_push(args: PenPushArgs) -> Result<()> {
+    let cfg = load_default()?;
+    let root = resolve_pen_root(&cfg.pen)?;
+    let pen = load_pen(&root, &args.name)?;
+    let raw = std::fs::read_to_string(&args.request).context("reading request file")?;
+    let request: nave_apply::PushEnvelope = match serde_json::from_str(&raw) {
+        Ok(r) => r,
+        Err(e) => {
+            let result = nave_apply::PushResult {
+                protocol_version: nave_apply::PROTOCOL_VERSION,
+                adapter_state: nave_apply::AdapterState::Error,
+                reason: Some(format!("invalid request: {e}")),
+                repos: vec![],
+            };
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
+            std::process::exit(1);
+        }
+    };
+    let result = nave_pen::apply_ops::push_branch(&root, &pen, &args.branch, &request).await?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     }

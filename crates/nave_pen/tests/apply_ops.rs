@@ -10,7 +10,7 @@
 //! tests avoid this: they link `nave_pen` exactly once, the same instance
 //! `nave_test_support` links.
 use nave_apply::PROTOCOL_VERSION;
-use nave_pen::apply_ops::{capabilities, commit_bound, provision_branch};
+use nave_pen::apply_ops::{capabilities, commit_bound, provision_branch, push_branch};
 
 /// Minimal local git-output helper for asserting on-disk state after a verb
 /// call. `git_util`'s equivalent is crate-private and unreachable here.
@@ -272,4 +272,81 @@ async fn commit_rejects_invalid_bound_path_at_envelope_level() {
     .unwrap();
     assert!(matches!(res.adapter_state, nave_apply::AdapterState::Error));
     assert!(res.repos.is_empty());
+}
+
+async fn provisioned_and_committed(
+    name: &str,
+    apply_ref: &str,
+) -> (nave_test_support::PenFixture, String) {
+    let fx = provisioned(name, apply_ref).await;
+    let dir = nave_pen::pen_repo_clone_dir(fx.pen_root.path(), name, "acme", "docs");
+    std::fs::write(dir.join("lockfile.json"), "{}").unwrap();
+    let commit_res = commit_bound(
+        fx.pen_root.path(),
+        &fx.pen,
+        apply_ref,
+        "m",
+        &commit_req(&["lockfile.json"]),
+    )
+    .await
+    .unwrap();
+    (fx, commit_res.repos[0].local_commit_sha.clone().unwrap())
+}
+
+fn push_req() -> nave_apply::PushEnvelope {
+    nave_apply::PushEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        repos: vec![nave_apply::PushRepoRequest {
+            repo: "acme/docs".into(),
+        }],
+    }
+}
+
+#[tokio::test]
+async fn push_reports_remote_sha_matching_local_commit() {
+    let (fx, local_sha) = provisioned_and_committed("push-fx", "pulse/apply/pu1").await;
+    let res = push_branch(fx.pen_root.path(), &fx.pen, "pulse/apply/pu1", &push_req())
+        .await
+        .unwrap();
+    assert!(matches!(res.repos[0].state, nave_apply::PushState::Ok));
+    assert_eq!(res.repos[0].remote_sha.as_deref(), Some(local_sha.as_str()));
+    assert_eq!(res.repos[0].remote_ref.as_deref(), Some("pulse/apply/pu1"));
+}
+
+#[tokio::test]
+async fn push_is_idempotent_on_identical_history() {
+    let (fx, _) = provisioned_and_committed("push-fx2", "pulse/apply/pu2").await;
+    push_branch(fx.pen_root.path(), &fx.pen, "pulse/apply/pu2", &push_req())
+        .await
+        .unwrap();
+    let second = push_branch(fx.pen_root.path(), &fx.pen, "pulse/apply/pu2", &push_req())
+        .await
+        .unwrap();
+    assert!(matches!(second.repos[0].state, nave_apply::PushState::Ok));
+}
+
+#[tokio::test]
+async fn push_fails_closed_without_a_prior_commit() {
+    let fx = provisioned("push-fx3", "pulse/apply/pu3").await;
+    let res = push_branch(fx.pen_root.path(), &fx.pen, "pulse/apply/pu3", &push_req())
+        .await
+        .unwrap();
+    assert!(matches!(
+        res.repos[0].state,
+        nave_apply::PushState::NoApplyState
+    ));
+}
+
+#[tokio::test]
+async fn push_fails_closed_when_origin_remote_changed_since_commit() {
+    let (fx, _) = provisioned_and_committed("push-fx4", "pulse/apply/pu4").await;
+    let dir = nave_pen::pen_repo_clone_dir(fx.pen_root.path(), "push-fx4", "acme", "docs");
+    git_status(&dir, &["remote", "set-url", "origin", "file:///elsewhere"]).await;
+    let res = push_branch(fx.pen_root.path(), &fx.pen, "pulse/apply/pu4", &push_req())
+        .await
+        .unwrap();
+    assert!(matches!(
+        res.repos[0].state,
+        nave_apply::PushState::PushRejected
+    ));
 }

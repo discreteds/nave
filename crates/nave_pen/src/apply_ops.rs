@@ -412,3 +412,198 @@ async fn commit_one(
     }
     mk(nave_apply::CommitState::Ok, Some(sha), None)
 }
+
+pub async fn push_branch(
+    pen_root: &Path,
+    pen: &Pen,
+    apply_ref: &str,
+    request: &nave_apply::PushEnvelope,
+) -> AResult<nave_apply::PushResult> {
+    let repo_ids: Vec<String> = request.repos.iter().map(|r| r.repo.clone()).collect();
+    if let Err(e) = nave_apply::validate_envelope_repos(request.protocol_version, &repo_ids) {
+        error_envelope!(PushResult, e);
+    }
+    if let Err(e) = nave_apply::validate_ref_name(apply_ref) {
+        error_envelope!(PushResult, e);
+    }
+    let state = read_apply_state(pen_root, &pen.name, apply_ref)?;
+    let mut results = Vec::with_capacity(request.repos.len());
+    for req in &request.repos {
+        let Some(pen_repo) = resolve_repo(pen, &req.repo) else {
+            results.push(nave_apply::PushRepoResult {
+                repo: req.repo.clone(),
+                remote: None,
+                remote_ref: None,
+                remote_sha: None,
+                upstream: None,
+                local_commit_sha: None,
+                state: nave_apply::PushState::UnknownRepo,
+                reason: Some("repo is not part of this pen".into()),
+            });
+            continue;
+        };
+        let dir = pen_repo_clone_dir(pen_root, &pen.name, &pen_repo.owner, &pen_repo.name);
+        results.push(
+            push_one(
+                &dir,
+                &req.repo,
+                apply_ref,
+                state.repos.get(&req.repo).cloned(),
+            )
+            .await,
+        );
+    }
+    Ok(nave_apply::PushResult {
+        protocol_version: nave_apply::PROTOCOL_VERSION,
+        adapter_state: nave_apply::AdapterState::Ok,
+        reason: None,
+        repos: results,
+    })
+}
+
+async fn verify_push_preconditions(
+    dir: &Path,
+    apply_ref: &str,
+    repo_state: &ApplyRepoState,
+) -> Result<String, (nave_apply::PushState, String)> {
+    let branch_sha = git_output(dir, &["rev-parse", &format!("refs/heads/{apply_ref}")])
+        .await
+        .map_err(|e| (nave_apply::PushState::MissingBranch, e.to_string()))?;
+    let Some(expected) = &repo_state.local_commit_sha else {
+        return Err((
+            nave_apply::PushState::NoApplyState,
+            "no committed local sha recorded for this repo".into(),
+        ));
+    };
+    if &branch_sha != expected {
+        return Err((
+            nave_apply::PushState::Diverged,
+            "apply branch tip does not match the recorded commit".into(),
+        ));
+    }
+    let origin_url = git_output(dir, &["remote", "get-url", "origin"])
+        .await
+        .map_err(|e| (nave_apply::PushState::PushRejected, e.to_string()))?;
+    if origin_url != repo_state.expected_origin_url {
+        return Err((
+            nave_apply::PushState::PushRejected,
+            "origin remote url changed since provisioning".into(),
+        ));
+    }
+    Ok(branch_sha)
+}
+
+struct PushEvidence {
+    remote: String,
+    remote_sha: String,
+    upstream: Option<String>,
+}
+
+async fn perform_push(
+    dir: &Path,
+    apply_ref: &str,
+    repo_state: &ApplyRepoState,
+) -> Result<(String, PushEvidence), (nave_apply::PushState, Option<String>, String)> {
+    let branch_sha = verify_push_preconditions(dir, apply_ref, repo_state)
+        .await
+        .map_err(|(state, reason)| (state, None, reason))?;
+    if let Err(e) = git_status(
+        dir,
+        &[
+            "push",
+            "origin",
+            &format!("refs/heads/{apply_ref}:refs/heads/{apply_ref}"),
+        ],
+    )
+    .await
+    {
+        return Err((
+            nave_apply::PushState::PushRejected,
+            Some(branch_sha),
+            e.to_string(),
+        ));
+    }
+    let Ok(remote) = git_output(dir, &["remote", "get-url", "origin"]).await else {
+        return Err((
+            nave_apply::PushState::PushRejected,
+            Some(branch_sha),
+            "push succeeded but remote url could not be re-read".into(),
+        ));
+    };
+    let Ok(remote_sha) = git_output(dir, &["rev-parse", &format!("origin/{apply_ref}")]).await
+    else {
+        return Err((
+            nave_apply::PushState::PushRejected,
+            Some(branch_sha),
+            "push succeeded but remote sha could not be verified".into(),
+        ));
+    };
+    let upstream = git_output(
+        dir,
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+    )
+    .await
+    .ok();
+    Ok((
+        branch_sha,
+        PushEvidence {
+            remote,
+            remote_sha,
+            upstream,
+        },
+    ))
+}
+
+async fn push_one(
+    dir: &Path,
+    repo: &str,
+    apply_ref: &str,
+    repo_state: Option<ApplyRepoState>,
+) -> nave_apply::PushRepoResult {
+    let base = nave_apply::PushRepoResult {
+        repo: repo.to_string(),
+        remote: None,
+        remote_ref: None,
+        remote_sha: None,
+        upstream: None,
+        local_commit_sha: None,
+        state: nave_apply::PushState::Ok,
+        reason: None,
+    };
+    let Some(repo_state) = repo_state else {
+        return nave_apply::PushRepoResult {
+            state: nave_apply::PushState::NoApplyState,
+            reason: Some("no provisioned/committed state recorded for this repo".into()),
+            ..base
+        };
+    };
+    if !dir.exists() {
+        return nave_apply::PushRepoResult {
+            state: nave_apply::PushState::MissingBranch,
+            reason: Some("clone directory does not exist".into()),
+            ..base
+        };
+    }
+    match perform_push(dir, apply_ref, &repo_state).await {
+        Ok((branch_sha, ev)) => nave_apply::PushRepoResult {
+            remote: Some(ev.remote),
+            remote_ref: Some(apply_ref.to_string()),
+            remote_sha: Some(ev.remote_sha),
+            upstream: ev.upstream,
+            local_commit_sha: Some(branch_sha),
+            state: nave_apply::PushState::Ok,
+            ..base
+        },
+        Err((state, local_commit_sha, reason)) => nave_apply::PushRepoResult {
+            state,
+            local_commit_sha,
+            reason: Some(reason),
+            ..base
+        },
+    }
+}
