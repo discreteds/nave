@@ -1295,6 +1295,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nave_apply"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "nave_build"
 version = "0.0.8"
 dependencies = [
