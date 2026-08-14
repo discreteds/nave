@@ -362,7 +362,11 @@ async fn push_verifies_remote_sha_under_single_branch_fetch_config() {
     let dir = nave_pen::pen_repo_clone_dir(fx.pen_root.path(), "push-fx-sb", "acme", "docs");
     git_status(
         &dir,
-        &["config", "remote.origin.fetch", "+refs/heads/develop:refs/remotes/origin/develop"],
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/develop:refs/remotes/origin/develop",
+        ],
     )
     .await;
     let res = push_branch(fx.pen_root.path(), &fx.pen, "pulse/apply/pusb", &push_req())
