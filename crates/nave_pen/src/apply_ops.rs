@@ -19,7 +19,7 @@ use std::path::Path;
 use anyhow::Result as AResult;
 
 use crate::apply_state::{ApplyRepoState, clear_apply_state, read_apply_state, write_apply_state};
-use crate::git_util::{git_ok, git_output, git_status};
+use crate::git_util::{git_ok, git_output, git_output_raw, git_status};
 use crate::storage::{Pen, PenRepo, pen_repo_clone_dir};
 
 pub(crate) fn resolve_repo<'a>(pen: &'a Pen, repo_id: &str) -> Option<&'a PenRepo> {
@@ -307,7 +307,7 @@ async fn verify_pre_commit_state(
 }
 
 async fn read_dirty_paths(dir: &Path) -> Result<Vec<String>, String> {
-    let porcelain = git_output(dir, &["status", "--porcelain"])
+    let porcelain = git_output_raw(dir, &["status", "--porcelain"])
         .await
         .map_err(|e| e.to_string())?;
     Ok(dirty_paths_from_porcelain(&porcelain))

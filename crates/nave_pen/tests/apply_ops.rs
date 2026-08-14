@@ -211,6 +211,29 @@ async fn commit_fails_closed_on_dirty_path_outside_bounds() {
 }
 
 #[tokio::test]
+async fn commit_stages_modified_tracked_file_within_bounds() {
+    // Regression: a worktree-only modification reports ` M path` porcelain
+    // (leading space). The dirty-path reader must not trim the capture —
+    // trimming eats the leading space of the first line and a fixed 3-char
+    // `XY ` prefix skip then truncates the first path's first character,
+    // so a valid in-bounds commit would fail as dirty-outside-bounds.
+    let fx = provisioned("commit-fx-mod", "pulse/apply/cmod").await;
+    let dir = nave_pen::pen_repo_clone_dir(fx.pen_root.path(), "commit-fx-mod", "acme", "docs");
+    std::fs::write(dir.join("README.md"), "seed\nmodified\n").unwrap();
+    let res = commit_bound(
+        fx.pen_root.path(),
+        &fx.pen,
+        "pulse/apply/cmod",
+        "edit readme",
+        &commit_req(&["README.md"]),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(res.repos[0].state, nave_apply::CommitState::Ok));
+    assert!(res.repos[0].local_commit_sha.is_some());
+}
+
+#[tokio::test]
 async fn commit_fails_closed_when_origin_remote_changed() {
     let fx = provisioned("commit-fx3", "pulse/apply/c3").await;
     let dir = nave_pen::pen_repo_clone_dir(fx.pen_root.path(), "commit-fx3", "acme", "docs");
