@@ -547,8 +547,21 @@ async fn perform_push(
             "push succeeded but remote url could not be re-read".into(),
         ));
     };
-    let Ok(remote_sha) = git_output(dir, &["rev-parse", &format!("origin/{apply_ref}")]).await
+    // Verify against the authoritative remote ref (ls-remote), never the
+    // local remote-tracking ref: `create_pen` clones with `--depth=1`,
+    // whose single-branch fetch refspec creates tracking refs only for the
+    // default branch, so `rev-parse origin/<apply_ref>` fails after pushing
+    // a NEW branch even though the push landed.
+    let Ok(ls_remote) = git_output(dir, &["ls-remote", "origin", &format!("refs/heads/{apply_ref}")]).await
     else {
+        return Err((
+            nave_apply::PushState::PushRejected,
+            Some(branch_sha),
+            "push succeeded but remote sha could not be verified".into(),
+        ));
+    };
+    let remote_sha = ls_remote.split_whitespace().next().unwrap_or("").to_string();
+    if remote_sha.is_empty() {
         return Err((
             nave_apply::PushState::PushRejected,
             Some(branch_sha),
