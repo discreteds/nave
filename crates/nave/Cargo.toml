@@ -33,6 +33,7 @@ indicatif = {workspace = true}
 cargo-husky = {version = "1.5.0", default-features = false, features = ["user-hooks"]}
 nave_test_support = {workspace = true}
 tempfile = {workspace = true}
+serde_json = {workspace = true}
 
 [lints]
 workspace = true

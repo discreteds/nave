@@ -1,5 +1,6 @@
 pub(crate) mod build;
 pub(crate) mod check;
+pub(crate) mod fleet;
 pub(crate) mod init;
 pub(crate) mod materialize;
 pub(crate) mod pen;

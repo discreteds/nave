@@ -401,7 +401,7 @@ async fn commit_one(
         return mk(nave_apply::CommitState::NothingToCommit, None, None);
     }
 
-    let sha = match stage_and_commit(dir, &req.paths, message).await {
+    let sha = match stage_and_commit(dir, &dirty, message).await {
         Ok(s) => s,
         Err(reason) => {
             return mk(
