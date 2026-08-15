@@ -91,3 +91,43 @@ fn fleet_list_plain_text_form() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout, "acme/alpha (develop)\n");
 }
+
+#[test]
+fn search_repo_scope_matches_exact_name() {
+    let home = temp_dir("repo-scope");
+    let cache = temp_dir("repo-scope-cache");
+    seed_repo(&cache, "acme", "docs", "main");
+    seed_repo(&cache, "acme", "docs-extra", "main");
+    // A checkout marker is required (search skips repos without one); the
+    // `repo:` scope matches identity, independent of tracked-file content.
+    std::fs::create_dir_all(cache.join("fleet").join("acme").join("docs").join("checkout")).unwrap();
+    std::fs::create_dir_all(
+        cache.join("fleet").join("acme").join("docs-extra").join("checkout"),
+    )
+    .unwrap();
+    write_config(&home, &cache);
+
+    // Exact name match selects only `docs`, not `docs-extra`.
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_nave"))
+        .args(["search", "repo:docs", "--json"])
+        .env("HOME", &home)
+        .output()
+        .expect("failed to execute nave");
+    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&cache);
+
+    assert!(
+        output.status.success(),
+        "search repo: failed; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
+    let repos: Vec<&str> = parsed["repos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["repo"].as_str().unwrap())
+        .collect();
+    assert_eq!(repos, vec!["docs"]);
+}

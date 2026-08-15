@@ -155,8 +155,41 @@ fn match_repo(
     pattern_matchers: &[(String, PathMatcher)],
     options: &SearchOptions,
 ) -> Result<Option<RepoMatch>> {
+    // Repo-scoped terms (`repo:<name>` / `repo:<owner/name>`) match the repo's
+    // identity rather than tracked-file content, so a pen can be seeded with an
+    // exact repo set regardless of what its files happen to contain.
+    let identity = format!("{}/{}", meta.owner, meta.name);
+    let mut hits: Vec<TermHit> = Vec::new();
+    for term in options.terms.iter().filter(|t| t.scope.as_deref() == Some("repo")) {
+        let matched = term
+            .needles
+            .iter()
+            .any(|n| identity == *n || meta.name == *n);
+        if !matched {
+            return Ok(None);
+        }
+        hits.push(TermHit {
+            term: term.raw.clone(),
+            files: vec![],
+        });
+    }
+
     let tracked = read_tracked(cache_root, &meta.owner, &meta.name)?;
+    let content_terms: Vec<&Term> = options
+        .terms
+        .iter()
+        .filter(|t| t.scope.as_deref() != Some("repo"))
+        .collect();
     if tracked.files.is_empty() {
+        if content_terms.is_empty() && options.match_preds.is_empty() {
+            return Ok(Some(RepoMatch {
+                owner: meta.owner.clone(),
+                repo: meta.name.clone(),
+                pushed_at: meta.pushed_at,
+                hits,
+                match_hits: vec![],
+            }));
+        }
         return Ok(None);
     }
 
@@ -185,9 +218,8 @@ fn match_repo(
         });
     }
 
-    // Terms: each must be satisfied by ≥ 1 in-scope file. Record evidence.
-    let mut hits: Vec<TermHit> = Vec::new();
-    for term in &options.terms {
+    // Content terms: each must be satisfied by ≥ 1 in-scope file. Record evidence.
+    for term in &content_terms {
         let mut file_matches: Vec<FileMatch> = Vec::new();
         for f in &files {
             if !term.applies_to_pattern(&f.pattern) {
