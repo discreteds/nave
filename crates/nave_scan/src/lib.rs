@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Result;
-use futures::{StreamExt, TryStreamExt, stream};
+use futures::{StreamExt, stream};
 use time::OffsetDateTime;
 use tracing::{info, warn};
 
@@ -25,6 +25,7 @@ const TREE_CONCURRENCY: usize = 8;
 
 pub struct ScanReport {
     pub repos_seen: usize,
+    pub skipped: usize,
     pub repos_with_tracked_files: usize,
     pub tracked_file_count: usize,
     pub auth_mode: String,
@@ -125,21 +126,32 @@ pub async fn run_scan(
     let matcher =
         nave_config::PathMatcher::new(&cfg.scan.tracked_paths, cfg.scan.case_insensitive)?;
 
-    // Walk tree for each repo, in parallel, capped.
+    // Walk tree for each repo, in parallel, capped. A repo whose tree can't be
+    // fetched (empty -> 409, deleted -> 404, restricted -> 403/451) is skipped
+    // with a warning rather than aborting the whole fleet scan.
+    let repo_count = repos.len();
     let results: Vec<(Repo, TreeResponse)> = stream::iter(repos)
         .map(|repo| {
             let client = &client;
             async move {
                 let (owner, name) = split_full_name(&repo.full_name);
-                let tree = client
+                match client
                     .get_tree_recursive(&owner, &name, &repo.default_branch)
-                    .await?;
-                Ok::<_, anyhow::Error>((repo, tree))
+                    .await
+                {
+                    Ok(tree) => Some((repo, tree)),
+                    Err(e) => {
+                        warn!(%owner, %name, error = %e, "skipping repo: tree fetch failed");
+                        None
+                    }
+                }
             }
         })
         .buffer_unordered(TREE_CONCURRENCY)
-        .try_collect()
-        .await?;
+        .filter_map(futures::future::ready)
+        .collect()
+        .await;
+    let skipped = repo_count.saturating_sub(results.len());
 
     let mut max_pushed = cache_meta_before.last_pushed_at;
     let mut repos_touched: std::collections::HashSet<(String, String)> =
@@ -222,6 +234,7 @@ pub async fn run_scan(
 
     Ok(ScanReport {
         repos_seen: results.len(),
+        skipped,
         repos_with_tracked_files: repos_with_tracked,
         tracked_file_count: tracked_total,
         auth_mode: auth_label,

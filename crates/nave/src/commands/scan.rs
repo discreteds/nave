@@ -45,6 +45,7 @@ pub(crate) async fn run(args: ScanArgs) -> Result<()> {
     let report = run_scan(&cfg, &root, &username, args.prune).await?;
     info!(
         repos = report.repos_seen,
+        skipped = report.skipped,
         with_tracked = report.repos_with_tracked_files,
         tracked_files = report.tracked_file_count,
         pruned = report.pruned,
