@@ -131,3 +131,37 @@ fn search_repo_scope_matches_exact_name() {
         .collect();
     assert_eq!(repos, vec!["docs"]);
 }
+
+#[test]
+fn fleet_list_term_resolves_repo_scope_without_checkout() {
+    let home = temp_dir("term");
+    let cache = temp_dir("term-cache");
+    seed_repo(&cache, "acme", "docs", "main");
+    seed_repo(&cache, "acme", "docs-extra", "main");
+    // Deliberately no checkout dirs: a `repo:`-scoped term resolves from
+    // scan metadata alone, so it must not require a `nave pull`.
+    write_config(&home, &cache);
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_nave"))
+        .args(["fleet", "list", "--json", "--term", "repo:docs"])
+        .env("HOME", &home)
+        .output()
+        .expect("failed to execute nave");
+
+    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&cache);
+
+    assert!(
+        output.status.success(),
+        "fleet list --term failed; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
+    assert_eq!(
+        parsed,
+        serde_json::json!([
+            {"owner": "acme", "name": "docs", "default_branch": "main"},
+        ])
+    );
+}
