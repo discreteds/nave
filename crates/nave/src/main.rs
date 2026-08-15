@@ -37,6 +37,8 @@ enum Command {
     Pen(commands::pen::PenArgs),
     /// Materialize specific files from repos into a typed evidence report.
     Materialize(commands::materialize::MaterializeArgs),
+    /// Query the cached fleet (repo discovery owned by nave, not pulse-gh).
+    Fleet(commands::fleet::FleetArgs),
 }
 
 #[tokio::main]
@@ -61,5 +63,6 @@ async fn main() -> Result<()> {
         Command::Search(args) => commands::search::run(args).await,
         Command::Pen(args) => commands::pen::run(args).await,
         Command::Materialize(args) => commands::materialize::run(args).await,
+        Command::Fleet(args) => commands::fleet::run(args).await,
     }
 }
