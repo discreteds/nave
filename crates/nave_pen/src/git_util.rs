@@ -28,6 +28,32 @@ pub(crate) async fn git_output(dir: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Like `git_output` but without trimming the captured stdout.
+///
+/// `git status --porcelain` lines begin with a status prefix whose first
+/// character may be a space (` M path` for a worktree-only modification);
+/// trimming the whole capture would strip that leading space from the
+/// FIRST line, and a parser that skips a fixed 3-char `XY ` prefix then
+/// eats the first character of the first dirty path.
+pub(crate) async fn git_output_raw(dir: &Path, args: &[&str]) -> Result<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .await
+        .with_context(|| format!("spawning git {args:?} in {}", dir.display()))?;
+    if !out.status.success() {
+        bail!(
+            "git {:?} in {} failed: {}",
+            args,
+            dir.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
 pub(crate) async fn git_status(dir: &Path, args: &[&str]) -> Result<()> {
     git_output(dir, args).await.map(|_| ())
 }

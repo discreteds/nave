@@ -211,6 +211,29 @@ async fn commit_fails_closed_on_dirty_path_outside_bounds() {
 }
 
 #[tokio::test]
+async fn commit_stages_modified_tracked_file_within_bounds() {
+    // Regression: a worktree-only modification reports ` M path` porcelain
+    // (leading space). The dirty-path reader must not trim the capture —
+    // trimming eats the leading space of the first line and a fixed 3-char
+    // `XY ` prefix skip then truncates the first path's first character,
+    // so a valid in-bounds commit would fail as dirty-outside-bounds.
+    let fx = provisioned("commit-fx-mod", "pulse/apply/cmod").await;
+    let dir = nave_pen::pen_repo_clone_dir(fx.pen_root.path(), "commit-fx-mod", "acme", "docs");
+    std::fs::write(dir.join("README.md"), "seed\nmodified\n").unwrap();
+    let res = commit_bound(
+        fx.pen_root.path(),
+        &fx.pen,
+        "pulse/apply/cmod",
+        "edit readme",
+        &commit_req(&["README.md"]),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(res.repos[0].state, nave_apply::CommitState::Ok));
+    assert!(res.repos[0].local_commit_sha.is_some());
+}
+
+#[tokio::test]
 async fn commit_fails_closed_when_origin_remote_changed() {
     let fx = provisioned("commit-fx3", "pulse/apply/c3").await;
     let dir = nave_pen::pen_repo_clone_dir(fx.pen_root.path(), "commit-fx3", "acme", "docs");
@@ -325,6 +348,32 @@ async fn push_is_idempotent_on_identical_history() {
         .await
         .unwrap();
     assert!(matches!(second.repos[0].state, nave_apply::PushState::Ok));
+}
+
+#[tokio::test]
+async fn push_verifies_remote_sha_under_single_branch_fetch_config() {
+    // Regression: `create_pen` clones with `--depth=1`, whose single-branch
+    // fetch refspec creates local tracking refs only for the default branch.
+    // After pushing a NEW apply branch, `rev-parse origin/<apply_ref>` has no
+    // tracking ref to read and the push is wrongly reported as failed even
+    // though it landed. The remote-SHA check must use ls-remote, which reads
+    // the authoritative remote state regardless of clone shape.
+    let (fx, local_sha) = provisioned_and_committed("push-fx-sb", "pulse/apply/pusb").await;
+    let dir = nave_pen::pen_repo_clone_dir(fx.pen_root.path(), "push-fx-sb", "acme", "docs");
+    git_status(
+        &dir,
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/develop:refs/remotes/origin/develop",
+        ],
+    )
+    .await;
+    let res = push_branch(fx.pen_root.path(), &fx.pen, "pulse/apply/pusb", &push_req())
+        .await
+        .unwrap();
+    assert!(matches!(res.repos[0].state, nave_apply::PushState::Ok));
+    assert_eq!(res.repos[0].remote_sha.as_deref(), Some(local_sha.as_str()));
 }
 
 #[tokio::test]
