@@ -71,6 +71,7 @@ pub async fn provision_branch(
                 base_ref: req.base_ref.clone(),
                 expected_base_sha: req.expected_base_sha.clone(),
                 observed_base_sha: String::new(),
+                observed_tree_sha: String::new(),
                 apply_ref: request.apply_ref.clone(),
                 state: nave_apply::BranchState::UnknownRepo,
                 reason: Some("repo is not part of this pen".into()),
@@ -123,18 +124,22 @@ async fn provision_one(
     req: &nave_apply::BranchRepoRequest,
     apply_ref: &str,
 ) -> nave_apply::BranchRepoResult {
-    let mk = |state, observed: String, reason: Option<&str>| nave_apply::BranchRepoResult {
-        repo: req.repo.clone(),
-        base_ref: req.base_ref.clone(),
-        expected_base_sha: req.expected_base_sha.clone(),
-        observed_base_sha: observed,
-        apply_ref: apply_ref.to_string(),
-        state,
-        reason: reason.map(str::to_string),
+    let mk = |state, observed: String, observed_tree: String, reason: Option<&str>| {
+        nave_apply::BranchRepoResult {
+            repo: req.repo.clone(),
+            base_ref: req.base_ref.clone(),
+            expected_base_sha: req.expected_base_sha.clone(),
+            observed_base_sha: observed,
+            observed_tree_sha: observed_tree,
+            apply_ref: apply_ref.to_string(),
+            state,
+            reason: reason.map(str::to_string),
+        }
     };
     if !dir.exists() {
         return mk(
             nave_apply::BranchState::MissingRef,
+            String::new(),
             String::new(),
             Some("clone directory does not exist"),
         );
@@ -142,6 +147,7 @@ async fn provision_one(
     if let Err(e) = git_status(dir, &["fetch", "--depth=1", "origin", &req.base_ref]).await {
         return mk(
             nave_apply::BranchState::MissingRef,
+            String::new(),
             String::new(),
             Some(&e.to_string()),
         );
@@ -152,6 +158,7 @@ async fn provision_one(
         Err(e) => {
             return mk(
                 nave_apply::BranchState::MissingRef,
+                String::new(),
                 String::new(),
                 Some(&e.to_string()),
             );
@@ -166,13 +173,32 @@ async fn provision_one(
         return mk(
             nave_apply::BranchState::NotACommit,
             observed,
+            String::new(),
             Some("resolved object is not a commit"),
         );
     }
+    // The tree SHA is resolved from the already-fetched, already-verified
+    // commit object — a purely local `git rev-parse`, zero extra network
+    // or GitHub-API cost. A failure here (should not happen for a verified
+    // commit) is reported the same way a missing ref is: NotACommit with
+    // an explicit reason, never a silent empty string passed downstream.
+    let observed_tree = match git_output(dir, &["rev-parse", &format!("{observed}^{{tree}}")]).await
+    {
+        Ok(tree_sha) => tree_sha,
+        Err(e) => {
+            return mk(
+                nave_apply::BranchState::NotACommit,
+                observed,
+                String::new(),
+                Some(&format!("resolved commit has no tree: {e}")),
+            );
+        }
+    };
     if observed != req.expected_base_sha {
         return mk(
             nave_apply::BranchState::StaleBase,
             observed,
+            observed_tree,
             Some("observed base sha does not match expected"),
         );
     }
@@ -191,6 +217,7 @@ async fn provision_one(
         return mk(
             nave_apply::BranchState::Exists,
             observed,
+            observed_tree,
             Some("apply branch already exists"),
         );
     }
@@ -198,10 +225,11 @@ async fn provision_one(
         return mk(
             nave_apply::BranchState::NotACommit,
             observed,
+            observed_tree,
             Some(&e.to_string()),
         );
     }
-    mk(nave_apply::BranchState::Ok, observed, None)
+    mk(nave_apply::BranchState::Ok, observed, observed_tree, None)
 }
 
 pub async fn commit_bound(

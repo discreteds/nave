@@ -205,6 +205,7 @@ pub struct BranchRepoResult {
     pub base_ref: String,
     pub expected_base_sha: String,
     pub observed_base_sha: String,
+    pub observed_tree_sha: String,
     pub apply_ref: String,
     pub state: BranchState,
     #[serde(skip_serializing_if = "Option::is_none")]
