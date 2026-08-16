@@ -351,12 +351,27 @@ fn is_valid_repo_identity(repo: &str) -> bool {
 /// Failures (missing repo, rate limiting, auth/visibility) surface as
 /// `anyhow::Error` and are turned into typed [`ArtifactState`]s by the
 /// materializer — never into a false [`ArtifactState::Absent`].
-#[allow(async_fn_in_trait)]
 pub trait MaterializeSource {
     /// Resolve repository metadata (used for its `default_branch`).
     async fn repository(&self, owner: &str, repo: &str) -> Result<Repo>;
 
-    /// Fetch the recursive tree for `ref_name`.
+    /// Resolve `ref_name` to its commit, including the commit's OWN tree
+    /// object SHA — the correct source for `RepoResult.tree_sha`. Never
+    /// use `tree()`'s response for this (see its doc comment).
+    async fn commit(
+        &self,
+        owner: &str,
+        repo: &str,
+        ref_name: &str,
+    ) -> Result<nave_github::CommitResponse>;
+
+    /// Fetch the recursive tree for `ref_name`, for file-listing only.
+    ///
+    /// The response's top-level `sha` field is NOT a tree object hash when
+    /// `ref_name` is a branch/tag name (GitHub's Git Trees API resolves the
+    /// ref through to its commit and echoes that commit's SHA back as
+    /// `sha`, not the tree's own hash) — never use it as a tree identity;
+    /// use `commit()`'s `commit.tree.sha` instead.
     async fn tree(&self, owner: &str, repo: &str, ref_name: &str) -> Result<TreeResponse>;
 
     /// Fetch a single blob by its object SHA.
@@ -366,6 +381,15 @@ pub trait MaterializeSource {
 impl MaterializeSource for nave_github::GithubClient {
     async fn repository(&self, owner: &str, repo: &str) -> Result<Repo> {
         self.get_repo(owner, repo).await
+    }
+
+    async fn commit(
+        &self,
+        owner: &str,
+        repo: &str,
+        ref_name: &str,
+    ) -> Result<nave_github::CommitResponse> {
+        self.get_commit(owner, repo, ref_name).await
     }
 
     async fn tree(&self, owner: &str, repo: &str, ref_name: &str) -> Result<TreeResponse> {
@@ -422,6 +446,22 @@ async fn materialize_repo<S: MaterializeSource>(
     };
     let ref_name = repo.default_branch.clone();
 
+    // Resolve the commit at ref_name, for its REAL tree object SHA — never
+    // the recursive-tree endpoint's own `sha` field (see `tree()`'s doc
+    // comment: that field is the commit SHA, not a tree hash, when fetched
+    // by branch name).
+    let commit = match source.commit(owner, name, &ref_name).await {
+        Ok(commit) => commit,
+        Err(err) => {
+            return repo_error(
+                repo_request,
+                &ref_name,
+                "",
+                &format!("failed to resolve commit: {err:#}"),
+            );
+        }
+    };
+
     // Walk the recursive tree.
     let tree = match source.tree(owner, name, &ref_name).await {
         Ok(tree) => tree,
@@ -429,7 +469,7 @@ async fn materialize_repo<S: MaterializeSource>(
             return repo_error(
                 repo_request,
                 &ref_name,
-                "",
+                &commit.commit.tree.sha,
                 &format!("failed to fetch tree: {err:#}"),
             );
         }
@@ -461,7 +501,7 @@ async fn materialize_repo<S: MaterializeSource>(
     RepoResult {
         repo: repo_request.repo.clone(),
         ref_name,
-        tree_sha: tree.sha,
+        tree_sha: commit.commit.tree.sha,
         tree_complete,
         artifacts,
     }

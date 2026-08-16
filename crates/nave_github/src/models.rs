@@ -35,6 +35,46 @@ pub struct TreeEntry {
     pub sha: String,
 }
 
+/// Response shape for `GET /repos/{owner}/{repo}/commits/{ref}`.
+///
+/// `commit.tree.sha` is the commit's OWN tree object SHA — distinct from
+/// `TreeResponse.sha` (from the recursive-tree endpoint), which GitHub
+/// echoes back as the resolved COMMIT sha when the tree is fetched by
+/// branch/tag name rather than an explicit tree SHA (a documented-but-
+/// easy-to-misread quirk: `git/trees/{ref}` accepts "the SHA1 value or ref
+/// name of the tree", and when given a ref name it resolves through to
+/// that ref's commit, not its tree, before echoing `sha` back).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CommitResponse {
+    pub sha: String,
+    pub commit: CommitDetail,
+}
+
+impl CommitResponse {
+    /// Build a fixture value directly (bypassing JSON deserialization) —
+    /// for tests constructing a `MaterializeSource` fake.
+    pub fn new(sha: impl Into<String>, tree_sha: impl Into<String>) -> Self {
+        Self {
+            sha: sha.into(),
+            commit: CommitDetail {
+                tree: CommitTree {
+                    sha: tree_sha.into(),
+                },
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CommitDetail {
+    pub tree: CommitTree,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CommitTree {
+    pub sha: String,
+}
+
 /// Response shape for `GET /search/repositories`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchResponse {
