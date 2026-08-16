@@ -4,7 +4,7 @@ use reqwest::{Client, StatusCode};
 use tracing::{debug, warn};
 
 use crate::auth::AuthMode;
-use crate::models::{BlobResponse, Repo, SearchResponse, TreeResponse};
+use crate::models::{BlobResponse, CommitResponse, Repo, SearchResponse, TreeResponse};
 
 pub struct GithubClient {
     http: Client,
@@ -121,6 +121,24 @@ impl GithubClient {
             warn!(%owner, %repo, "tree response was truncated; some paths may be missed");
         }
         Ok(tree)
+    }
+
+    /// `GET /repos/{owner}/{repo}/commits/{ref}` — resolves `ref` (a
+    /// branch/tag name or SHA) to its commit, including the commit's OWN
+    /// tree object SHA (`commit.tree.sha`). Never use `get_tree_recursive`'s
+    /// top-level `sha` field for this — see `CommitResponse`'s doc comment.
+    pub async fn get_commit(
+        &self,
+        owner: &str,
+        repo: &str,
+        git_ref: &str,
+    ) -> Result<CommitResponse> {
+        let url = format!(
+            "{}/repos/{}/{}/commits/{}",
+            self.api_base, owner, repo, git_ref,
+        );
+        let resp = self.http.get(&url).send().await?;
+        parse_body(resp).await
     }
 
     /// `GET /repos/{owner}/{repo}`

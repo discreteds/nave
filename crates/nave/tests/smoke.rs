@@ -67,14 +67,15 @@ fn write_config(home: &std::path::Path, api_base: &str) {
 }
 
 /// A minimal HTTP/1.1 responder that answers the fixed sequence of GETs a
-/// single-repo materialize run makes (repo, tree, blob). Returns the bound
-/// port. Runs `count` accept/respond cycles then exits.
+/// single-repo materialize run makes (repo, commit, tree, blob). Returns
+/// the bound port. Runs `count` accept/respond cycles then exits.
 fn spawn_mock_github(count: usize) -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
 
     // Canned bodies. The blob content is base64 for the ASCII text "hello\n".
     let repo_body = r#"{"name":"widget","full_name":"acme/widget","default_branch":"main","clone_url":"https://example.invalid/acme/widget.git","fork":false,"archived":false,"owner":{"login":"acme"}}"#;
+    let commit_body = r#"{"sha":"commit123","commit":{"tree":{"sha":"tree123"}}}"#;
     let tree_body = r#"{"sha":"tree123","truncated":false,"tree":[{"path":"README.md","type":"blob","sha":"blobsha1"}]}"#;
     // base64("hello\n") == "aGVsbG8K"
     let blob_body = r#"{"sha":"blobsha1","size":6,"encoding":"base64","content":"aGVsbG8K"}"#;
@@ -95,6 +96,8 @@ fn spawn_mock_github(count: usize) -> u16 {
                 tree_body
             } else if first_line.contains("/git/blobs/") {
                 blob_body
+            } else if first_line.contains("/commits/") {
+                commit_body
             } else {
                 // GET /repos/{owner}/{repo}
                 repo_body
@@ -153,7 +156,7 @@ fn materialize_invalid_request_exits_nonzero_without_echoing_contents() {
 #[test]
 fn materialize_json_output_validates() {
     let dir = temp_dir("json");
-    let port = spawn_mock_github(3);
+    let port = spawn_mock_github(4);
     write_config(&dir, &format!("http://127.0.0.1:{port}"));
 
     let request = r#"{"contract_version":1,"repos":[{"repo":"acme/widget","selectors":[{"id":"readme","pattern":"README.md","max_bytes":null}]}]}"#;
@@ -204,7 +207,7 @@ fn materialize_json_output_validates() {
 #[test]
 fn materialize_human_output_omits_content() {
     let dir = temp_dir("human");
-    let port = spawn_mock_github(3);
+    let port = spawn_mock_github(4);
     write_config(&dir, &format!("http://127.0.0.1:{port}"));
 
     let request = r#"{"contract_version":1,"repos":[{"repo":"acme/widget","selectors":[{"id":"readme","pattern":"README.md","max_bytes":null}]}]}"#;

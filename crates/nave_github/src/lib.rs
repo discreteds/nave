@@ -4,4 +4,4 @@ pub mod models;
 
 pub use auth::{AuthMode, detect_auth};
 pub use client::GithubClient;
-pub use models::{BlobResponse, Repo, RepoOwner, TreeEntry, TreeResponse};
+pub use models::{BlobResponse, CommitResponse, Repo, RepoOwner, TreeEntry, TreeResponse};

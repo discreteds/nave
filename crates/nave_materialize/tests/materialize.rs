@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use anyhow::{Result, anyhow};
 use base64::Engine;
-use nave_github::{BlobResponse, Repo, RepoOwner, TreeEntry, TreeResponse};
+use nave_github::{BlobResponse, CommitResponse, Repo, RepoOwner, TreeEntry, TreeResponse};
 use nave_materialize::{
     ArtifactState, MAX_FILE_BYTES, MaterializeRequest, MaterializeSource, RepoRequest, Selector,
     materialize,
@@ -21,6 +21,7 @@ use nave_materialize::{
 #[derive(Default)]
 struct FakeSource {
     repos: HashMap<String, Result<Repo, String>>,
+    commits: HashMap<String, Result<CommitResponse, String>>,
     trees: HashMap<String, Result<TreeResponse, String>>,
     blobs: HashMap<String, Result<BlobResponse, String>>,
 }
@@ -31,11 +32,34 @@ impl FakeSource {
             format!("{owner}/{name}"),
             Ok(make_repo(owner, name, default_branch)),
         );
+        // Every with_repo() also registers a default commit fixture — tests
+        // that only care about tree walking, never the tree_sha value
+        // itself, don't need to set one up explicitly. Call with_commit()
+        // (in any order relative to with_repo()) to override it.
+        self.commits
+            .entry(format!("{owner}/{name}"))
+            .or_insert_with(|| {
+                Ok(CommitResponse::new(
+                    format!("commit-{owner}-{name}"),
+                    format!("tree-{owner}-{name}"),
+                ))
+            });
         self
     }
 
     fn with_repo_error(mut self, owner: &str, name: &str, msg: &str) -> Self {
         self.repos
+            .insert(format!("{owner}/{name}"), Err(msg.to_string()));
+        self
+    }
+
+    fn with_commit(mut self, owner: &str, name: &str, commit: CommitResponse) -> Self {
+        self.commits.insert(format!("{owner}/{name}"), Ok(commit));
+        self
+    }
+
+    fn with_commit_error(mut self, owner: &str, name: &str, msg: &str) -> Self {
+        self.commits
             .insert(format!("{owner}/{name}"), Err(msg.to_string()));
         self
     }
@@ -68,6 +92,19 @@ impl MaterializeSource for FakeSource {
             Some(Ok(r)) => Ok(r.clone()),
             Some(Err(e)) => Err(anyhow!(e.clone())),
             None => Err(anyhow!("no repo fixture for {owner}/{repo}")),
+        }
+    }
+
+    async fn commit(
+        &self,
+        owner: &str,
+        repo: &str,
+        _ref_name: &str,
+    ) -> Result<nave_github::CommitResponse> {
+        match self.commits.get(&format!("{owner}/{repo}")) {
+            Some(Ok(c)) => Ok(c.clone()),
+            Some(Err(e)) => Err(anyhow!(e.clone())),
+            None => Err(anyhow!("no commit fixture for {owner}/{repo}")),
         }
     }
 
@@ -173,6 +210,11 @@ fn selector(id: &str, pattern: &str, max_bytes: Option<u64>) -> Selector {
 async fn exact_match_produces_found_with_content() {
     let src = FakeSource::default()
         .with_repo("acme", "widget", "main")
+        // The commit's tree SHA is deliberately distinct from the tree
+        // response's own `sha` ("t1", used only for file-listing below) -
+        // proving `RepoResult.tree_sha` is sourced from `commit()`, never
+        // from `tree()`'s own (commit-SHA-when-by-branch-name) response.
+        .with_commit("acme", "widget", CommitResponse::new("c1", "real-tree-sha"))
         .with_tree(
             "acme",
             "widget",
@@ -190,7 +232,7 @@ async fn exact_match_produces_found_with_content() {
     let repo = &result.repos[0];
     assert_eq!(repo.repo, "acme/widget");
     assert_eq!(repo.ref_name, "main");
-    assert_eq!(repo.tree_sha, "t1");
+    assert_eq!(repo.tree_sha, "real-tree-sha");
     assert!(repo.tree_complete);
     assert_eq!(repo.artifacts.len(), 1);
 
@@ -332,6 +374,34 @@ async fn rate_limited_tree_is_error() {
     .await;
 
     let repo = &result.repos[0];
+    assert_eq!(repo.artifacts.len(), 1);
+    assert_eq!(repo.artifacts[0].state, ArtifactState::Error);
+    assert!(repo.artifacts[0].detail.as_deref().unwrap().contains("403"));
+}
+
+#[tokio::test]
+async fn commit_fetch_error_is_error_state() {
+    // Regression: `commit()` is a real, independently-failing call in the
+    // fetch sequence (repo -> commit -> tree), inserted to source the real
+    // tree object SHA. A commit-resolution failure must surface the same
+    // typed Error path as a repo or tree failure - not panic, not silently
+    // fall back to the tree endpoint's own (wrong) `sha` field.
+    let src = FakeSource::default()
+        .with_repo("acme", "widget", "main")
+        .with_commit_error(
+            "acme",
+            "widget",
+            "GitHub returned 403 (x-ratelimit-remaining=0)",
+        );
+
+    let result = materialize(
+        &src,
+        request("acme/widget", vec![selector("readme", "README.md", None)]),
+    )
+    .await;
+
+    let repo = &result.repos[0];
+    assert_eq!(repo.tree_sha, "");
     assert_eq!(repo.artifacts.len(), 1);
     assert_eq!(repo.artifacts[0].state, ArtifactState::Error);
     assert!(repo.artifacts[0].detail.as_deref().unwrap().contains("403"));
