@@ -89,6 +89,25 @@ async fn branch_provisions_off_verified_remote_base() {
 }
 
 #[tokio::test]
+async fn branch_reports_observed_tree_sha_matching_local_git() {
+    let fx = nave_test_support::init_pen_fixture("branch-tree", "acme", "docs", "develop").await;
+    let res = provision_branch(
+        fx.pen_root.path(),
+        &fx.pen,
+        &branch_req(&fx, "pulse/apply/p-tree"),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(res.repos[0].state, nave_apply::BranchState::Ok));
+
+    let dir = nave_pen::pen_repo_clone_dir(fx.pen_root.path(), "branch-tree", "acme", "docs");
+    let expected_tree =
+        git_output(&dir, &["rev-parse", &format!("{}^{{tree}}", fx.base_sha)]).await;
+    assert_eq!(res.repos[0].observed_tree_sha, expected_tree);
+    assert!(!res.repos[0].observed_tree_sha.is_empty());
+}
+
+#[tokio::test]
 async fn branch_reports_stale_base_without_creating_branch() {
     let fx = nave_test_support::init_pen_fixture("branch-fx2", "acme", "docs", "develop").await;
     let mut req = branch_req(&fx, "pulse/apply/p1");
